@@ -1,18 +1,21 @@
 ---
-title: "40-Apul-Gene-Methylation"
+title: "15-Peve-Gene-Methylation"
 output: html_document
 ---
 
-# Gene Methylation Analysis in A. pulchra
+# Gene Methylation Analysis in Pevermanni
 
 ## gene file
 
 ```{bash}
-head ../data/Apulchra-genome.gff
+tail ../data/Porites_evermanni_validated.gff3
 
 ```
+
+
+
 ```{bash}
-cut -f3 ../data/Apulchra-genome.gff | \
+cut -f3 ../data/Porites_evermanni_validated.gff3 | \
 grep -v "^#" | \
 sort | uniq -c | sort -nr
 ```
@@ -27,12 +30,12 @@ gawk '$3=="gene" {
         }
     }
     print $1 "\t" $4-1 "\t" $5 "\t" gene_id;
-}' ../data/Apulchra-genome.gff > ../data/Apluchra-genes.bed
+}' ../data/Porites_evermanni_validated.gff3 > ../data/Porites_evermanni_gene.gff3
 ```
 
 ```{bash}
-head ../data/Apluchra-genes.bed
-wc -l ../data/Apluchra-genes.bed
+head ../data/Porites_evermanni_gene.gff3
+wc -l ../data/Porites_evermanni_gene.gff3
 ```
 
 
@@ -40,11 +43,11 @@ wc -l ../data/Apluchra-genes.bed
 mkdir -p ../data/10xbedgraph
 cd ../data/10xbedgraph
 wget -r -l1 --no-parent -nd -A '*10x.bedgraph' \
-     'https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/timeseries_molecular/D-Apul/output/15.5-Apul-bismark/'
+     'https://gannet.fish.washington.edu/metacarcinus/E5/Pevermanni/20250821_meth_Peve/'
 ```
 
 ```{bash}
-head ../data/10xbedgraph/ACR-229-TP1_10x.bedgraph
+head ../data/10xbedgraph/POR-69-TP1_10x.bedgraph
 ```
 
 ```{bash}
@@ -56,39 +59,44 @@ done
 
 
 ```{bash}
-head ../data/10xbedgraph/ACR-225-TP1_10x.sorted.bedgraph
+head ../data/10xbedgraph/POR-69-TP1_10x.sorted.bedgraph
 ```
 
 
 ```{bash}
+mkdir -p ../output/15-Peve-Gene-Methylation/
+
 for f in ../data/10xbedgraph/*_10x.sorted.bedgraph; do
     sample=$(basename "$f" _10x.sorted.bedgraph)
 
     bedtools map \
-        -a ../data/Apluchra-genes.bed \
+        -a ../data/Porites_evermanni_gene.gff3 \
         -b "$f" \
         -c 4 \
         -o mean,count \
-        > ../output/40-Apul-Gene-Methylation/gene_methylation_${sample}.tsv
+        > ../output/15-Peve-Gene-Methylation/gene_methylation_${sample}.tsv
 done
 ```
 
 
 ```{bash}
-head ../output/40-Apul-Gene-Methylation/gene_methylation_ACR-229-TP*.tsv
+head ../output/15-Peve-Gene-Methylation/gene_methylation_POR-69-TP*.tsv
 ```
+
+
+
 Lets filter so all column 6 (count) is greater than 10 - meaning at least 10 CpG sites were covered in that gene.
 
 ```{bash}
-for f in ../output/40-Apul-Gene-Methylation/gene_methylation*.tsv; do
-    out="../output/40-Apul-Gene-Methylation/$(basename "${f%.tsv}_gt10.tsv")"
+for f in ../output/15-Peve-Gene-Methylation/gene_methylation*.tsv; do
+    out="../output/15-Peve-Gene-Methylation/$(basename "${f%.tsv}_gt10.tsv")"
     awk '$6 > 10' "$f" > "$out"
 done
 ```
 
 
 ```{bash}
-head ../output/40-Apul-Gene-Methylation/gene_methylation_ACR-225-TP*_gt10.tsv
+head ../output/15-Peve-Gene-Methylation/gene_methylation_POR-69-TP*_gt10.tsv
 ```
 
 
@@ -96,7 +104,7 @@ head ../output/40-Apul-Gene-Methylation/gene_methylation_ACR-225-TP*_gt10.tsv
 library(tidyverse)
 
 # Directory containing all filtered tsv files
-indir <- "../output/40-Apul-Gene-Methylation"
+indir <- "../output/15-Peve-Gene-Methylation"
 
 # List all filtered files
 files <- list.files(indir, pattern = "gene_methylation.*_gt10.tsv", full.names = TRUE)
@@ -120,12 +128,12 @@ merged_complete <- merged |>
   filter(if_all(-gene_id, ~ !is.na(.x)))
 
 # Save the filtered version
-write_tsv(merged_complete, "../output/40-Apul-Gene-Methylation/Apul-gene-methylation_complete.tsv")
+write_tsv(merged_complete, "../output/15-Peve-Gene-Methylation/Peve-gene-methylation_complete.tsv")
 ```
 
 ```{bash}
-head ../output/40-Apul-Gene-Methylation/Apul-gene-methylation_complete.tsv
-wc -l ../output/40-Apul-Gene-Methylation/Apul-gene-methylation_complete.tsv
+head ../output/15-Peve-Gene-Methylation/Peve-gene-methylation_complete.tsv
+wc -l ../output/15-Peve-Gene-Methylation/Peve-gene-methylation_complete.tsv
 ```
 
 
@@ -133,7 +141,7 @@ wc -l ../output/40-Apul-Gene-Methylation/Apul-gene-methylation_complete.tsv
 library(tidyverse)
 
 # Directory containing all filtered tsv files
-indir <- "../output/40-Apul-Gene-Methylation"
+indir <- "../output/15-Peve-Gene-Methylation"
 
 # List all filtered files
 files <- list.files(indir, pattern = "gene_methylation.*_gt10.tsv", full.names = TRUE)
@@ -162,12 +170,12 @@ merged_75 <- merged %>%
   select(-frac_nonNA)
 
 # Save 75% filtered matrix
-write_tsv(merged_75, "../output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv")
+write_tsv(merged_75, "../output/15-Peve-Gene-Methylation/Peve-gene-methylation_75pct.tsv")
 ```
 
 ```{bash}
-wc -l ../output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv
-head ../output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv
+wc -l ../output/15-Peve-Gene-Methylation/Peve-gene-methylation_75pct.tsv
+head ../output/15-Peve-Gene-Methylation/Peve-gene-methylation_75pct.tsv
 ```
 
 
@@ -182,7 +190,7 @@ library(pheatmap)
 # ------------------------------------------------------------
 # Load data
 # ------------------------------------------------------------
-df <- read_tsv("../output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv")
+df <- read_tsv("../output/15-Peve-Gene-Methylation/Peve-gene-methylation_75pct.tsv")
 
 mat <- df %>%
   column_to_rownames("gene_id") %>%
@@ -244,7 +252,7 @@ library(RColorBrewer)
 # -------------------------
 # Load data
 # -------------------------
-df <- read_tsv("../output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv")
+df <- read_tsv("../output/15-Peve-Gene-Methylation/Peve-gene-methylation_75pct.tsv")
 
 # -------------------------
 # Convert to matrix
@@ -283,7 +291,7 @@ mat2_t <- t(mat2)
 # -------------------------
 # Extract sample group
 # -------------------------
-sample_groups <- str_extract(rownames(mat2_t), "ACR-[0-9]+")
+sample_groups <- str_extract(rownames(mat2_t), "POR-[0-9]+")
 
 ngroups <- length(unique(sample_groups))
 
@@ -323,57 +331,51 @@ ggplot(pca_df, aes(PC1, PC2, color = group, label = sample)) +
 library(tidyverse)
 library(pheatmap)
 
-# ------------------------------------------------
-# Load and convert to matrix
-# ------------------------------------------------
-mat <- read_tsv("../output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv") %>%
+# Load and convert
+mat <- read_tsv("../output/15-Peve-Gene-Methylation/Peve-gene-methylation_75pct.tsv") %>%
   column_to_rownames("gene_id") %>%
   as.matrix()
 
-# ------------------------------------------------
-# Step 1 — Impute NA with row means
-# ------------------------------------------------
+# 1. Impute NA with row means
 row_means <- rowMeans(mat, na.rm = TRUE)
-
+row_means[is.na(row_means)] <- 0
 for (i in seq_len(nrow(mat))) {
-  if (is.na(row_means[i])) row_means[i] <- 0  # handles all-NA rows
   mat[i, is.na(mat[i, ])] <- row_means[i]
 }
 
-# ------------------------------------------------
-# Step 2 — Remove zero-variance genes
-# (these make correlation produce NA columns)
-# ------------------------------------------------
+# 2. Remove zero-variance rows
 keep <- apply(mat, 1, function(x) sd(x) > 0)
 mat2 <- mat[keep, , drop = FALSE]
 
-# ------------------------------------------------
-# Step 3 — Remove any rows still containing Inf/NaN
-# ------------------------------------------------
+# 3. Remove non-finite rows
 mat2 <- mat2[apply(mat2, 1, function(x) all(is.finite(x))), , drop = FALSE]
 
-# ------------------------------------------------
-# Step 4 — Compute correlation matrix safely
-# ------------------------------------------------
+cat("Genes before:", nrow(mat),
+    "\nNonzero variance:", sum(keep),
+    "\nFinite after filtering:", nrow(mat2), "\n")
+
+# Safety check
+if (nrow(mat2) < 2) {
+  stop("No usable genes remain after filtering — correlation cannot be computed.")
+}
+
+# 4. Correlation matrix
 cor_mat <- cor(mat2, use = "pairwise.complete.obs")
 
-# ------------------------------------------------
-# Step 5 — Remove NA rows/columns in correlation matrix (if any remain)
-# ------------------------------------------------
+# 5. Remove NA columns
 finite_cols <- apply(cor_mat, 2, function(x) all(is.finite(x)))
-cor_mat2 <- cor_mat[finite_cols, finite_cols]
+cor_mat2 <- cor_mat[finite_cols, finite_cols, drop = FALSE]
 
-# ------------------------------------------------
-# Step 6 — Plot sample–sample correlation heatmap
-# ------------------------------------------------
+# 6. Heatmap
 pheatmap(cor_mat2,
          main = "Sample–Sample Correlation",
          clustering_method = "average",
          fontsize = 12)
 ```
 
-225-T1??
-
-```{bash}
-head ../output/40-Apul-Gene-Methylation/gene_methylation_ACR-225-TP*_gt10.tsv
+```{r}
+nrow(mat)
+sum(keep)
+nrow(mat2)
 ```
+
