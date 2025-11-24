@@ -32,10 +32,12 @@ gawk '$3=="gene" {
 
 ```{bash}
 head ../data/Apluchra-genes.bed
+wc -l ../data/Apluchra-genes.bed
 ```
 
 
-```
+```{bash}
+mkdir -p ../data/10xbedgraph
 cd ../data/10xbedgraph
 wget -r -l1 --no-parent -nd -A '*10x.bedgraph' \
      'https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/timeseries_molecular/D-Apul/output/15.5-Apul-bismark/'
@@ -50,6 +52,13 @@ for f in ../data/10xbedgraph/*_10x.bedgraph; do
     sort -k1,1 -k2,2n "$f" > ${f%.bedgraph}.sorted.bedgraph
 done
 ```
+
+
+
+```{bash}
+head ../data/10xbedgraph/ACR-225-TP1_10x.sorted.bedgraph
+```
+
 
 ```{bash}
 for f in ../data/10xbedgraph/*_10x.sorted.bedgraph; do
@@ -79,8 +88,10 @@ done
 
 
 ```{bash}
-head ../output/40-Apul-Gene-Methylation/gene_methylation_ACR-229-TP*_gt10.tsv
+head ../output/40-Apul-Gene-Methylation/gene_methylation_ACR-225-TP*_gt10.tsv
 ```
+
+
 ```{r}
 library(tidyverse)
 
@@ -92,74 +103,201 @@ files <- list.files(indir, pattern = "gene_methylation.*_gt10.tsv", full.names =
 
 # Read and combine
 df_list <- lapply(files, function(f) {
-  sample_name <- basename(f) |> sub("gene_methylation_", "", x = _) |> sub("_gt10.tsv", "", x = _)
+  sample_name <- basename(f) |> 
+    sub("gene_methylation_", "", x = _) |> 
+    sub("_gt10.tsv", "", x = _)
 
   read_tsv(f, col_names = FALSE) |>
-    select(X4, X6) |>          # X4 = gene_id, X6 = methylation/count
-    rename(gene_id = X4, !!sample_name := X6)
+    select(X4, X5) |>          # X4 = gene_id, X5 = methylation percentage
+    rename(gene_id = X4, !!sample_name := X5)
 })
 
 # Full join all files by gene_id
 merged <- reduce(df_list, full_join, by = "gene_id")
 
-# Replace NA with 0 (optional)
-merged[is.na(merged)] <- 0
+# Filter: keep only genes with no missing values across samples
+merged_complete <- merged |> 
+  filter(if_all(-gene_id, ~ !is.na(.x)))
 
-# Save
-write_tsv(merged, "../output/40-Apul-Gene-Methylation/Apul-gene-methylation.tsv")
+# Save the filtered version
+write_tsv(merged_complete, "../output/40-Apul-Gene-Methylation/Apul-gene-methylation_complete.tsv")
 ```
 
 ```{bash}
-head ../output/40-Apul-Gene-Methylation/Apul-gene-methylation.tsv
+head ../output/40-Apul-Gene-Methylation/Apul-gene-methylation_complete.tsv
+wc -l ../output/40-Apul-Gene-Methylation/Apul-gene-methylation_complete.tsv
 ```
 
 
 ```{r}
-library(pheatmap)
 library(tidyverse)
 
-df <- read_tsv("../output/40-Apul-Gene-Methylation/Apul-gene-methylation.tsv")
+# Directory containing all filtered tsv files
+indir <- "../output/40-Apul-Gene-Methylation"
+
+# List all filtered files
+files <- list.files(indir, pattern = "gene_methylation.*_gt10.tsv", full.names = TRUE)
+
+# Read and combine
+df_list <- lapply(files, function(f) {
+  sample_name <- basename(f) |> 
+    sub("gene_methylation_", "", x = _) |> 
+    sub("_gt10.tsv", "", x = _)
+
+  read_tsv(f, col_names = FALSE) |>
+    select(X4, X5) |>
+    rename(gene_id = X4, !!sample_name := X5)
+})
+
+# Full join all files by gene_id
+merged <- reduce(df_list, full_join, by = "gene_id")
+
+# ---- NEW PART: keep genes present in >=75% of samples ----
+merged_75 <- merged %>% 
+  mutate(
+    # fraction of samples with non-NA values (ignores gene_id column)
+    frac_nonNA = rowMeans(!is.na(across(-gene_id)))
+  ) %>%
+  filter(frac_nonNA >= 0.75) %>% 
+  select(-frac_nonNA)
+
+# Save 75% filtered matrix
+write_tsv(merged_75, "../output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv")
+```
+
+```{bash}
+wc -l ../output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv
+head ../output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv
+```
+
+
+
+
+
+
+```{r}
+library(tidyverse)
+library(pheatmap)
+
+# ------------------------------------------------------------
+# Load data
+# ------------------------------------------------------------
+df <- read_tsv("../output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv")
 
 mat <- df %>%
   column_to_rownames("gene_id") %>%
   as.matrix()
 
-pheatmap(mat,
-         scale = "row",            # makes genes comparable
-         clustering_method = "ward.D2",
-         show_rownames = FALSE,
-         main = "Gene-level Methylation Patterns")
+# ------------------------------------------------------------
+# Step 1 — Impute NA with row means
+# ------------------------------------------------------------
+row_means <- rowMeans(mat, na.rm = TRUE)
+
+for (i in seq_len(nrow(mat))) {
+  if (is.na(row_means[i])) row_means[i] <- 0  # all-NA rows
+  mat[i, is.na(mat[i, ])] <- row_means[i]
+}
+
+# ------------------------------------------------------------
+# Step 2 — Remove zero-variance rows
+# ------------------------------------------------------------
+keep <- apply(mat, 1, function(x) sd(x) > 0)
+mat2 <- mat[keep, , drop = FALSE]
+
+# ------------------------------------------------------------
+# Step 3 — Remove rows still containing Inf/NaN
+# ------------------------------------------------------------
+mat2 <- mat2[apply(mat2, 1, function(x) all(is.finite(x))), , drop = FALSE]
+
+# ------------------------------------------------------------
+# Heatmap 1 — Scaled (same as before)
+# ------------------------------------------------------------
+pheatmap(
+  mat2,
+  scale = "row",
+  clustering_method = "ward.D2",
+  show_rownames = FALSE,
+  main = "Gene-level Methylation Patterns (Scaled)"
+)
+
+# ------------------------------------------------------------
+# Heatmap 2 — Actual methylation values (Unscaled)
+# ------------------------------------------------------------
+pheatmap(
+  mat2,
+  scale = "none",
+  clustering_method = "ward.D2",
+  show_rownames = FALSE,
+  main = "Gene-level Methylation Values (Raw)",
+  color = colorRampPalette(c("navy","green", "firebrick"))(100)  # optional nicer palette
+)
 ```
+
+
+
+
 
 ```{r}
 library(tidyverse)
 library(RColorBrewer)
 
+# -------------------------
 # Load data
+# -------------------------
+df <- read_tsv("../output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv")
 
-
-# Make gene_id rownames and transpose so samples are rows
+# -------------------------
+# Convert to matrix
+# -------------------------
 mat <- df %>%
   column_to_rownames("gene_id") %>%
-  t()
+  as.matrix()
 
-# Extract sample group (everything before -TP)
-sample_groups <- str_extract(rownames(mat), "ACR-[0-9]+")
+# -------------------------
+# Step 1: Impute NA with row means
+# -------------------------
+row_means <- rowMeans(mat, na.rm = TRUE)
 
-# Number of unique groups
+for (i in seq_len(nrow(mat))) {
+  if (is.na(row_means[i])) row_means[i] <- 0  # if entire row is NA
+  mat[i, is.na(mat[i, ])] <- row_means[i]
+}
+
+# -------------------------
+# Step 2: Remove zero-variance genes 
+# (these blow up PCA scaling)
+# -------------------------
+keep <- apply(mat, 1, function(x) sd(x) > 0)
+mat2 <- mat[keep, ]
+
+# -------------------------
+# Step 3: Remove genes containing any Inf/NaN
+# -------------------------
+mat2 <- mat2[apply(mat2, 1, function(x) all(is.finite(x))), ]
+
+# -------------------------
+# Step 4: Transpose (samples as rows)
+# -------------------------
+mat2_t <- t(mat2)
+
+# -------------------------
+# Extract sample group
+# -------------------------
+sample_groups <- str_extract(rownames(mat2_t), "ACR-[0-9]+")
+
 ngroups <- length(unique(sample_groups))
 
-# Choose a Brewer palette and get enough colors
-# (Paired, Set3, or Dark2 work well)
 colors <- brewer.pal(max(3, ngroups), "Dark2")[1:ngroups]
-
-# Name the colors so they map to groups
 group_colors <- setNames(colors, unique(sample_groups))
 
-# Run PCA
-pca <- prcomp(mat, scale. = TRUE)
+# -------------------------
+# Step 5: Run PCA safely
+# -------------------------
+pca <- prcomp(mat2_t, scale. = TRUE)
 
-# Build PCA dataframe
+# -------------------------
+# Step 6: Build plotting DF
+# -------------------------
 pca_df <- data.frame(
   PC1 = pca$x[,1],
   PC2 = pca$x[,2],
@@ -167,7 +305,9 @@ pca_df <- data.frame(
   group = sample_groups
 )
 
-# Plot PCA
+# -------------------------
+# Step 7: Plot PCA
+# -------------------------
 ggplot(pca_df, aes(PC1, PC2, color = group, label = sample)) +
   geom_point(size = 4) +
   geom_text(vjust = -0.7, size = 3) +
@@ -180,16 +320,60 @@ ggplot(pca_df, aes(PC1, PC2, color = group, label = sample)) +
 ```
 
 ```{r}
+library(tidyverse)
 library(pheatmap)
 
-mat <- read_tsv("../output/40-Apul-Gene-Methylation/Apul-gene-methylation.tsv") %>%
+# ------------------------------------------------
+# Load and convert to matrix
+# ------------------------------------------------
+mat <- read_tsv("../output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv") %>%
   column_to_rownames("gene_id") %>%
   as.matrix()
 
-cor_mat <- cor(mat, use="pairwise.complete.obs")
+# ------------------------------------------------
+# Step 1 — Impute NA with row means
+# ------------------------------------------------
+row_means <- rowMeans(mat, na.rm = TRUE)
 
-pheatmap(cor_mat,
-         main="Sample–Sample Correlation",
-         clustering_method="average")
+for (i in seq_len(nrow(mat))) {
+  if (is.na(row_means[i])) row_means[i] <- 0  # handles all-NA rows
+  mat[i, is.na(mat[i, ])] <- row_means[i]
+}
+
+# ------------------------------------------------
+# Step 2 — Remove zero-variance genes
+# (these make correlation produce NA columns)
+# ------------------------------------------------
+keep <- apply(mat, 1, function(x) sd(x) > 0)
+mat2 <- mat[keep, , drop = FALSE]
+
+# ------------------------------------------------
+# Step 3 — Remove any rows still containing Inf/NaN
+# ------------------------------------------------
+mat2 <- mat2[apply(mat2, 1, function(x) all(is.finite(x))), , drop = FALSE]
+
+# ------------------------------------------------
+# Step 4 — Compute correlation matrix safely
+# ------------------------------------------------
+cor_mat <- cor(mat2, use = "pairwise.complete.obs")
+
+# ------------------------------------------------
+# Step 5 — Remove NA rows/columns in correlation matrix (if any remain)
+# ------------------------------------------------
+finite_cols <- apply(cor_mat, 2, function(x) all(is.finite(x)))
+cor_mat2 <- cor_mat[finite_cols, finite_cols]
+
+# ------------------------------------------------
+# Step 6 — Plot sample–sample correlation heatmap
+# ------------------------------------------------
+pheatmap(cor_mat2,
+         main = "Sample–Sample Correlation",
+         clustering_method = "average",
+         fontsize = 12)
 ```
 
+225-T1??
+
+```{bash}
+head ../output/40-Apul-Gene-Methylation/gene_methylation_ACR-225-TP*_gt10.tsv
+```
