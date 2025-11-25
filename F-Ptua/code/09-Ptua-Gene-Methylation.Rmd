@@ -45,7 +45,7 @@ wc -l ../data/Pocillopora_meandrina_HIv1.GENESonly-validated.bed
 mkdir -p ../data/10xbedgraph
 cd ../data/10xbedgraph
 wget -r -l1 --no-parent -nd -A '*10x.bedgraph' \
-     'https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/timeseries_molecular/D-Apul/output/15.5-Apul-bismark/'
+     'https://gannet.fish.washington.edu/metacarcinus/E5/Ptuahiniensis/20250821_meth_Ptua/'
 ```
 
 ```{bash}
