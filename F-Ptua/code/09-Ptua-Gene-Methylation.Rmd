@@ -1,18 +1,23 @@
 ---
-title: "40-Apul-Gene-Methylation"
+title: "09-Ptua-Gene-Methylation"
 output: html_document
 ---
 
-# Gene Methylation Analysis in A. pulchra
+# Gene Methylation Analysis in Ptua
+
 
 ## gene file
 
 ```{bash}
-head ../data/Apulchra-genome.gff
+head ../data/Pocillopora_meandrina_HIv1.genes.gff3
 
 ```
+
+
+
+
 ```{bash}
-cut -f3 ../data/Apulchra-genome.gff | \
+cut -f3 ../data/Pocillopora_meandrina_HIv1.genes-validated.gff3 | \
 grep -v "^#" | \
 sort | uniq -c | sort -nr
 ```
@@ -27,12 +32,12 @@ gawk '$3=="gene" {
         }
     }
     print $1 "\t" $4-1 "\t" $5 "\t" gene_id;
-}' ../data/Apulchra-genome.gff > ../data/Apluchra-genes.bed
+}' ../data/Pocillopora_meandrina_HIv1.genes-validated.gff3 > ../data/Pocillopora_meandrina_HIv1.GENESonly-validated.bed
 ```
 
 ```{bash}
-head ../data/Apluchra-genes.bed
-wc -l ../data/Apluchra-genes.bed
+head ../data/Pocillopora_meandrina_HIv1.GENESonly-validated.bed
+wc -l ../data/Pocillopora_meandrina_HIv1.GENESonly-validated.bed
 ```
 
 
