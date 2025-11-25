@@ -1,0 +1,309 @@
+---
+title: "31-biomin-pathway"
+output: html_document
+date: "2025-11-16"
+---
+
+Have list of biomineralization genes from coral literature (e.g., Takeuchi et al. 2016, Ramos-Silva et al. 2013)
+
+
+| Accession / GeneID | Blasted protein in Stylophora | Definition | Reference |
+|---|---|---|---|
+| AAD11470.1 | XP_022803851.1 | L-type calcium channel alpha-1 subunit | Zoccola et al., 1999 |
+| AAR13013.1 | XP_022785723.1 | plasma membrane calcium ATPase | Zoccola et al., 2004 |
+| ACE95141.1 | XP_022799914.1 | carbonic anhydrase | Moya et al., 2008 |
+| AGE35225.2 | XP_022785805.1 | CARP1 | Mass et al., 2013 |
+| AGE35226.1 | XP_022794102.1 | CARP3 | Mass et al., 2013 |
+| AGG36361.1 | XP_022784808.1 | Protoacadherin (PC4) | Drake et al., 2013 |
+| AJQ31790.1 | XP_022788307.1 | solute carrier family 4 member gamma | Zoccola et al., 2015 |
+| aug_v2a.00002.t1 | XP_022808048.1, XP_022808045.1, XP_022790310.1 | EP-like 2 | Takeuchi et al., 2016 |
+| aug_v2a.01440.t1 (aug_v2a.01441.t1) | XP_022780690.1 | Adi-SAARP2 | Takeuchi et al., 2016 |
+| aug_v2a.02830 | XP_022782704.1, XP_022782703.1 | PKD1-related protein | Takeuchi et al., 2016 |
+| aug_v2a.02830.t1 | XP_022782704.1, XP_022782703.1 | PKD1-related protein | Takeuchi et al., 2016 |
+| aug_v2a.05945.t1 | XP_022783430.1 | TSP-1 and VWA domain-containing | Takeuchi et al., 2016 |
+| aug_v2a.06122.t1 | XP_022804012.1 | EGF & laminin G domain protein | Takeuchi et al., 2016 |
+| aug_v2a.06123.t1 | XP_022804012.1 | EGF & laminin G domain protein | Takeuchi et al., 2016 |
+| aug_v2a.06327.t1 | XP_022781839.1, XP_022781915.1 | SAARP3 | Takeuchi et al., 2016 |
+| aug_v2a.07627.t1 | XP_022806326.1 | Zona pellucida domain protein | Takeuchi et al., 2016 |
+| aug_v2a.09809.t1 | XP_022801334.1 | Mucin4-like protein | Takeuchi et al., 2016 |
+| aug_v2a.09968.t1 | XP_022794736.1 | MAM & LDLr domain protein | Takeuchi et al., 2016 |
+| aug_v2a.09969.t1 | XP_022794736.1 | MAM & LDLr domain protein | Takeuchi et al., 2016 |
+| aug_v2a.11068.t1 | XP_022782398.1 | SAARP1 | Takeuchi et al., 2016 |
+| aug_v2a.15064.t1 | XP_022808152.1 | Cysteine-rich | Takeuchi et al., 2016 |
+| aug_v2a.15065.t1 | XP_022794122.1, XP_022794121.1 | galaxin2 | Takeuchi et al., 2016 |
+| aug_v2a.15580.t1 | XP_022804012.1 | Laminin G domain protein | Takeuchi et al., 2016 |
+| aug_v2a.18631.t1 | XP_022794122.1, XP_022794121.1 | galaxin | Takeuchi et al., 2016 |
+| aug_v2a.19518.t1 | XP_022784808.1 | Protocadherin-like | Takeuchi et al., 2016 |
+| aug_v2a.22918.t1 | XP_022808048.1, XP_022808045.1, XP_022790310.1 | EP-like1 | Takeuchi et al., 2016 |
+| aug_v2a.24015.t1 | XP_022788227.1 | Hephaestin-like protein | Takeuchi et al., 2016 |
+| aug_v2a.24512.t1 | XP_022804012.1 | EGF & laminin G domain protein | Takeuchi et al., 2016 |
+| EU532164.1 | XP_022799914.1 | carbonic anhydrase 2 | Bertucci et al., 2011 |
+| Gene:g29033.t1 | XP_022799914.1 | Carbonic Anhydrase (STPCA2-1) | Mummadisetti et al., 2021 |
+| Gene:g3745.t1 | XP_022782398.1 | CARP4 | Mummadisetti et al., 2021 |
+| Gene:10186 | XP_022784808.1 | Protocadherin (PC2) | Mummadisetti et al., 2021 |
+| Gene:g10186 | XP_022782398.1 | CARP4 | Mummadisetti et al., 2021 |
+| Gene:g10187 | XP_022784808.1 | Protocadherin (PC3) | Mummadisetti et al., 2021 |
+| Gene:g10188 | XP_022784808.1 | Protocadherin (PC3) | Mummadisetti et al., 2021 |
+| Gene:g11190 | XP_022783323.1 | USOMP12 | Mummadisetti et al., 2021 |
+| Gene:g13552 | XP_022781839.1 | Acidic SOMP (p27) | Mummadisetti et al., 2021 |
+| Gene:g14733 | XP_022782398.1 | CARP4 | Mummadisetti et al., 2021 |
+| Gene:g1484 | XP_022785805.1 | CARP1 | Mummadisetti et al., 2021 |
+| Gene:g15294.t1 | XP_022779720.1 | Vitellogenin | Mummadisetti et al., 2021 |
+| Gene:g15955 | XP_022794736.1 | MAM LDL-2 | Mummadisetti et al., 2021 |
+| Gene:g2115 | XP_022784808.1 | Cadherin | Mummadisetti et al., 2021 |
+| Gene:g2116 | XP_022784808.1 | Protocadherin (PC1) | Mummadisetti et al., 2021 |
+| Gene:g22569 | XP_022810031.1 | Fibronectin | Mummadisetti et al., 2021 |
+| Gene:g24177 | XP_022798258.1 | Protocadherin (PC5) | Mummadisetti et al., 2021 |
+| Gene:g27814 | XP_022801359.1 | carbonic anhydrase (STPCA2-2) | Mummadisetti et al., 2021 |
+| Gene:g2829 | XP_022783414.1, XP_022783413.1 | Thrombospondin | Mummadisetti et al., 2021 |
+| Gene:g2829.t1 | XP_022783415.1 | Coadhesin | Mummadisetti et al., 2021 |
+| Gene:g29034.t1 | XP_022799914.1 | Carbonic Anhydrase | Mummadisetti et al., 2021 |
+| Gene:g30 | XP_022784808.1 | Protoacadherin (PC4) | Mummadisetti et al., 2021 |
+| Gene:g30385.t1 | XP_022780049.1 | USOMPS13 | Mummadisetti et al., 2021 |
+| Gene:g34749 | XP_022804012.1 | EGF & LamininG-Like | Mummadisetti et al., 2021 |
+| Gene:g37058 | XP_022804608.1 | Fibronectin-2 | Mummadisetti et al., 2021 |
+| Gene:g38128 | XP_022783430.1 | α-Collagen | Mummadisetti et al., 2021 |
+| Gene:g38881 | XP_022790556.1, XP_022790555.1 | USOMP14 | Mummadisetti et al., 2021 |
+| Gene:g39770 | XP_022795871.1 | Kielin-Like | Mummadisetti et al., 2021 |
+| Gene:g5735.t1 | XP_022799127.1 | Tolloid-Like | Mummadisetti et al., 2021 |
+| Gene:g7086 | XP_022804012.1 | EGF LamG1 | Mummadisetti et al., 2021 |
+| Gene:g8396 | XP_022803859.1 | CARP6-partial | Mummadisetti et al., 2021 |
+| Gene:g907 | XP_022806326.1 | Zona Pellucida | Mummadisetti et al., 2021 |
+| Gene:g9094 | XP_022795459.1, XP_022777933.1 | Actin | Mummadisetti et al., 2021 |
+| HM163215 | XP_029187982.1 | Acropora millepora galaxin | Reyes-Bermudez et al., 2009 |
+| JN631095.1 | XP_029195765.1 | hypothetical protein p251_4 | Hayward et al., 2011 |
+| JR971508.1 | XP_022793420.1, XP_022793422.1 | USOMP6 | Ramos-Silva et al., 2013 |
+| JR972076.1 | XP_022781839.1, XP_022781915.1 | Acidic SOMP | Ramos-Silva et al., 2013 |
+| JR973117.1 | XP_022808048.1, XP_022808045.1 | USOMP-5 | Ramos-Silva et al., 2013 |
+| JR976690.1 | XP_022794122.1, XP_022794121.1 | Galaxin 2 | Ramos-Silva et al., 2013 |
+| JR980881.1 | XP_022804012.1 | EGF & laminin G protein | Ramos-Silva et al., 2013 |
+| JR982706.1 | XP_022808152.1 | USOMP-2 | Ramos-Silva et al., 2013 |
+| JR986059.1 | XP_022782738.1 | Cephalotoxin-like | Ramos-Silva et al., 2013 |
+| JR991083.1 | XP_022779335.1 | Collagen α-1 chain | Ramos-Silva et al., 2013 |
+| JR991407.1 | XP_022780690.1 | SAARP2 | Ramos-Silva et al., 2013 |
+| JR994474.1 | XP_022794736.1 | MAM & LDL-receptor protein 2 | Ramos-Silva et al., 2013 |
+| JR997000.1 | XP_022807628.1, XP_022807627.1 | USOMP-3 | Ramos-Silva et al., 2013 |
+| JR998014.1 | XP_022799897.1, XP_022801331.1 | Putative carbonic anhydrase | Ramos-Silva et al., 2013 |
+| JR998260.1 | XP_022803212.1 | USOMP7 | Ramos-Silva et al., 2013 |
+| JT001945.1 | XP_022782398.1 | SAARP1 | Ramos-Silva et al., 2013 |
+| JT004498.1 | XP_022780690.1 | USOMP-4 | Ramos-Silva et al., 2013 |
+| JT011118.1 | XP_022794736.1 | MAM LDL receptor protein 1 | Ramos-Silva et al., 2013 |
+| JT014391.1 | XP_022797021.1 | USOMP-8 | Ramos-Silva et al., 2013 |
+| JT016638.1 | XP_022783430.1 | Coadhesin | Ramos-Silva et al., 2013 |
+| MG182344.1 | XP_022792788.1 | Acropora yongei Na+/Ca2+ exchanger | Barron et al., 2018 |
+| MG182345.1 | XP_022784107.1 | Acropora yongei Na+/Ca2+ exchanger | Barron et al., 2018 |
+| P12_g2385 | XP_022796981.1 | hypothetical protein | Drake et al., 2013 |
+| P13_g6918 | XP_022803207.1 | Sushi domain-containing | Drake et al., 2013 |
+| P14_g9951 | XP_022783415.1 | collagen-like protein | Drake et al., 2013 |
+| P15_g1532 | XP_022780640.1, XP_022783414.1 | CARP9 | Drake et al., 2013 |
+| P16_g11702 | XP_022780049.1 | hypothetical protein | Drake et al., 2013 |
+| P18_g810 | XP_022783430.1 | collagen-like protein | Drake et al., 2013 |
+| P19_g20041 | XP_022804012.1 | Contactin-associated protein | Drake et al., 2013 |
+| P2_g11187 | XP_022782364.1 | CARP8 | Drake et al., 2013 |
+| P20_g6066 | XP_022794736.1 | MAM domain anchor protein | Drake et al., 2013 |
+| P21_g18277 | XP_022806326.1 | Zona pellucida | Drake et al., 2013 |
+| P22_g19762 | XP_022785540.1 | hypothetical protein | Drake et al., 2013 |
+| P23_g1057 | XP_022808083.1, XP_022808082.1 | Protocadherin | Drake et al., 2013 |
+| P24_g15888 | XP_022779720.1 | vitellogenin-like protein | Drake et al., 2013 |
+| P26_g1441 | XP_022794920.1 | vitellogenin-like protein | Drake et al., 2013 |
+| P27_g18472 | XP_022781915.1 | Integrin-alpha | Drake et al., 2013 |
+| P28_g11651 | XP_022793421.1 | Late embryogenesis protein | Drake et al., 2013 |
+| P3_g12510 | XP_022783415.1 | Thrombospondin | Drake et al., 2013 |
+| P31_g20420 | XP_022804012.1 | Neurexin | Drake et al., 2013 |
+| P32_g5540 | XP_022795871.1 | Kielin/chordin-like | Drake et al., 2013 |
+| P33_g8985 | XP_022781364.1 | Flagellar associated protein | Drake et al., 2013 |
+| P34_g1714 | XP_022794736.1 | MAM/LDL receptor domain protein | Drake et al., 2013 |
+| P36_g13890 | XP_022794736.1 | Zonadhesion-like precursor | Drake et al., 2013 |
+| P4_g9861 | XP_022797264.1 | Viral inclusion protein | Drake et al., 2013 |
+| P5_g11674 | XP_022783415.1 | Hemicentin | Drake et al., 2013 |
+| P8_g9654 | XP_022786917.1, XP_022786918.1 | Major yolk protein | Drake et al., 2013 |
+| P9_g10811; P1_g11108; P10_g11107 | XP_022784808.1 | Protocadherin fat-like | Drake et al., 2013 |
+| PFX13778.1 | XP_022808646.1 | Sacsin | Peled et al., 2020 |
+| PFX14205.1 | XP_022808089.1 | Ret receptor kinase (partial) | Peled et al., 2020 |
+| PFX15740.1 | XP_022806058.1 | Protein FAM208A | Peled et al., 2020 |
+| PFX16398.1 | XP_022805070.1 | hypothetical protein | Peled et al., 2020 |
+| PFX18785.1 | XP_022801334.1, XP_022801335.1 | Mucin-4 | Peled et al., 2020 |
+| PFX26597.1 | XP_022788977.1 | Complement C3 | Peled et al., 2020 |
+| PFX26751.1 | XP_022788730.1 | Transmembrane protease serine 9 | Peled et al., 2020 |
+| PFX27832.1 | XP_022786864.1 | PARP11 | Peled et al., 2020 |
+| PFX30903.1 | XP_022781839.1 | hypothetical protein | Peled et al., 2020 |
+| XP_022778254.1 | XP_022778254.1 | uncharacterized protein LOC111319781 | Peled et al., 2020 |
+| XP_022778283.1 | XP_022778283.1 | uncharacterized protein LOC111319816 | Peled et al., 2020 |
+| XP_022779720.1 | XP_022779720.1 | vitellogenin-like | Peled et al., 2020 |
+| XP_022780303.1 | XP_022780303.1 | uncharacterized protein LOC111321626 | Peled et al., 2020 |
+| XP_022780690.1 | XP_022780690.1 | CARP5 | Peled et al., 2020 |
+| XP_022780694.1 | XP_022780694.1 | CUB & peptidase domain protein | Peled et al., 2020 |
+| XP_022781731.1 | XP_022781731.1 | sulfate anion transporter-like 2C | Zoccola et al., 2015 |
+| XP_022782398.1 | XP_022782398.1 | CARP4 | Peled et al., 2020 |
+| XP_022783031.1 | XP_022783031.1 | sodium bicarbonate transporter-like 11 | Zoccola et al., 2015 |
+| XP_022783044.1 | XP_022783044.1 | uncharacterized protein LOC111323869 | Peled et al., 2020 |
+| XP_022783323.1 | XP_022783323.1 | VHS3-like | Peled et al., 2020 |
+| XP_022783415.1 | XP_022783415.1 | coadhesin-like isoform X3 | Peled et al., 2020 |
+| XP_022783952.1 | XP_022783952.1 | collagenase 3-like | Peled et al., 2020 |
+| XP_022784623.1 | XP_022784623.1 | sperm-associated cation channel | Peled et al., 2020 |
+| XP_022786582.1 | XP_022786582.1 | synapsin-2-like isoform X2 | Peled et al., 2020 |
+| XP_022786918.1 | XP_022786918.1 | major yolk protein-like X2 | Peled et al., 2020 |
+| XP_022788227.1 | XP_022788227.1 | hephaestin-like protein | Peled et al., 2020 |
+| XP_022788270.1 | XP_022788270.1 | band 3 anion transport protein-like | Zoccola et al., 2015 |
+| XP_022788730.1 | XP_022788730.1 | elastase-like peptidase | Peled et al., 2020 |
+| XP_022789591.1 | XP_022789591.1 | endothelin-converting enzyme 1-like X2 | Peled et al., 2020 |
+| XP_022789932.1 | XP_022789932.1 | MAGUK p55 subfamily member 7-like | Peled et al., 2020 |
+| XP_022790441.1 | XP_022790441.1 | PHD finger protein 21A-like | Peled et al., 2020 |
+| XP_022791567.1 | XP_022791567.1 | anion exchange protein 2-like | Zoccola et al., 2015 |
+| XP_022792212.1 | XP_022792212.1 | ras-like protein 3 | Peled et al., 2020 |
+| XP_022794122.1 | XP_022794122.1 | galaxin-like isoform X2 | Peled et al., 2020 |
+| XP_022794351.1 | XP_022794351.1 | ependymin-related protein | Peled et al., 2020 |
+| XP_022794736.1 | XP_022794736.1 | MAM & LDL receptor protein 2-like | Peled et al., 2020 |
+| XP_022796981.1 | XP_022796981.1 | skeletal organic matrix protein 8-like | Peled et al., 2020 |
+| XP_022796982.1 | XP_022796982.1 | uncharacterized protein LOC111335364 | Peled et al., 2020 |
+| XP_022798902.1 | XP_022798902.1 | LDL receptor-related protein 8-like | Peled et al., 2020 |
+| XP_022799089.1 | XP_022799089.1 | CUB domain protein isoform X2 | Peled et al., 2020 |
+| XP_022799541.1 | XP_022799541.1 | uncharacterized protein LOC111337489 | Peled et al., 2020 |
+| XP_022800320.1 | XP_022800320.1 | sulfate anion transporter 1-like X1 | Zoccola et al., 2015 |
+| XP_022800329.1 | XP_022800329.1 | sulfate anion transporter 1-like X2 | Zoccola et al., 2015 |
+| XP_022800339.1 | XP_022800339.1 | sulfate anion transporter 1-like X1 | Zoccola et al., 2015 |
+| XP_022801463.1 | XP_022801463.1 | bicarbonate cotransporter 3-like X2 | Zoccola et al., 2015 |
+| XP_022803524.1 | XP_022803524.1 | digestive cysteine proteinase 1-like | Peled et al., 2020 |
+| XP_022803808.1 | XP_022803808.1 | tumor suppressor DMBT1-like | Peled et al., 2020 |
+| XP_022803872.1 | XP_022803872.1 | spore wall protein 2-like X3 | Peled et al., 2020 |
+| XP_022803894.1 | XP_022803894.1 | uncharacterized protein LOC111341206 | Peled et al., 2020 |
+| XP_022804012.1 | XP_022804012.1 | EGF & laminin G domain protein | Peled et al., 2020 |
+| XP_022804785.1 | XP_022804785.1 | thioredoxin reductase 1-like | Peled et al., 2020 |
+| XP_022805470.1 | XP_022805470.1 | uncharacterized protein LOC111342641 | Peled et al., 2020 |
+| XP_022806326.1 | XP_022806326.1 | ZP domain protein | Peled et al., 2020 |
+| XP_022806664.1 | XP_022806664.1 | protein lingerer-like | Peled et al., 2020 |
+| XP_022806928.1 | XP_022806928.1 | SLIT-ROBO RhoGAP1-like | Peled et al., 2020 |
+| XP_022807143.1 | XP_022807143.1 | condensin-2 subunit D3-like | Peled et al., 2020 |
+| XP_022807256.1 | XP_022807256.1 | uncharacterized protein LOC111344300 | Peled et al., 2020 |
+| XP_022807807.1 | XP_022807807.1 | uncharacterized protein LOC111344812 | Peled et al., 2020 |
+| XP_022808163.1 | XP_022808163.1 | uncharacterized protein LOC111345150 | Peled et al., 2020 |
+| XP_022808576.1 | XP_022808576.1 | LOC111345553 isoform X2 | Peled et al., 2020 |
+| XP_022809269.1 | XP_022809269.1 | microtubule-associated tumor suppressor 1-like X1 | Peled et al., 2020 |
+| XP_022809270.1 | XP_022809270.1 | microtubule-associated tumor suppressor 1-like X2 | Peled et al., 2020 |
+| XP_022810585.1 | XP_022810585.1 | vWF D + EGF domain protein (partial) | Peled et al., 2020 |
+
+
+
+# Styplophora pistillata proteins
+
+```{bash}
+head -20 ../data/GCF_002571385.2_Stylophora_pistillata_v1.1_protein.faa
+```
+
+```{bash}
+head ../data/biomin-ids.txt
+
+```
+
+```{bash}
+seqkit grep -f ../data/biomin-ids.txt ../data/GCF_002571385.2_Stylophora_pistillata_v1.1_protein.faa > ../output/31-biomin-pathway/Stylo-biomin.fasta
+```
+
+```{bash}
+head ../output/31-biomin-pathway/Stylo-biomin.fasta
+```
+
+
+```{bash}
+head ../output/11.3-ortholog-annotation/representative_sequences.faa
+```
+
+```{bash}
+grep -c ">" ../output/11.3-ortholog-annotation/representative_sequences.faa
+```
+
+
+
+
+
+```{bash}
+makeblastdb \
+-in ../output/31-biomin-pathway/Stylo-biomin.fasta \
+-dbtype prot \
+-out ../output/31-biomin-pathway/Stylo-biomin-db
+```
+
+
+```{bash}
+blastp \
+  -query ../output/11.3-ortholog-annotation/representative_sequences.faa \
+  -db ../output/31-biomin-pathway/Stylo-biomin-db \
+  -out ../output/31-biomin-pathway/OG-repseq_Stylo-biomin-results.tsv \
+  -outfmt "6 qseqid sseqid evalue bitscore" \
+  -evalue 1e-20 \
+  -max_target_seqs 1 \
+  -max_hsps 1 \
+  -num_threads 10
+```
+
+```{bash}
+head ../output/31-biomin-pathway/OG-repseq_Stylo-biomin-results.tsv
+```
+
+
+```{bash}
+wc -l ../output/31-biomin-pathway/OG-repseq_Stylo-biomin-results.tsv
+```
+
+
+
+
+```{bash}
+head ../output/11.3-ortholog-annotation/gene_to_ortholog_mapping.csv
+```
+
+
+
+```{r}
+library(dplyr)
+library(readr)
+
+# Paths
+blast_file <- "../output/31-biomin-pathway/OG-repseq_Stylo-biomin-results.tsv"
+mapping_file <- "../output/11.3-ortholog-annotation/gene_to_ortholog_mapping.csv"
+
+# Read BLAST results
+blast <- read_tsv(
+  blast_file,
+  col_names = c("gene_id", "hit", "evalue", "score")
+)
+
+# Read ortholog mapping
+mapping <- read_csv(mapping_file)
+
+# Join to add group_id to each gene in blast results
+annotated <- blast %>%
+  left_join(mapping %>% select(gene_id, group_id), by = "gene_id")
+
+
+# Write out CSV
+write_csv(annotated, "../output/31-biomin-pathway/OG-repseq_Stylo-biomin.csv")
+
+
+# View result
+annotated
+```
+
+
+```{bash}
+head ../output/31-biomin-pathway/OG-repseq_Stylo-biomin.csv
+```
+
+
+```{bash}
+cut -d',' -f5 ../output/31-biomin-pathway/OG-repseq_Stylo-biomin.csv | head
+```
+
+```{bash}
+cut -d',' -f5 ../output/31-biomin-pathway/OG-repseq_Stylo-biomin.csv | wc -l
+```
+
+
+# Pull matrix from each species for OG matches - should get ~658
+
+
+
+
+
+
+
