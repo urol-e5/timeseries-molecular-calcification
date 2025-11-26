@@ -294,16 +294,127 @@ head ../output/31-biomin-pathway/OG-repseq_Stylo-biomin.csv
 cut -d',' -f5 ../output/31-biomin-pathway/OG-repseq_Stylo-biomin.csv | head
 ```
 
+
+
 ```{bash}
-cut -d',' -f5 ../output/31-biomin-pathway/OG-repseq_Stylo-biomin.csv | wc -l
+mkdir -p ../output/33-biomin-pathway-counts
+cut -d',' -f5 ../output/31-biomin-pathway/OG-repseq_Stylo-biomin.csv \
+> ../output/33-biomin-pathway-counts/biomin-OG.txt
 ```
 
+```{bash}
+head ../output/33-biomin-pathway-counts/biomin-OG.txt
+```
+
+
+
+```{bash}
+head ../output/11.3-ortholog-annotation/gene_to_ortholog_mapping.csv
+```
+
+```{bash}
+wc -l ../output/11.3-ortholog-annotation/gene_to_ortholog_mapping.csv
+```
 
 # Pull matrix from each species for OG matches - should get ~658
 
 
+```{r}
+library(tidyverse)
+
+ogs <- read_tsv("../output/33-biomin-pathway-counts/biomin-OG.txt",
+                col_names = "group_id")
+
+map <- read_csv("../output/11.3-ortholog-annotation/gene_to_ortholog_mapping.csv")
+
+filtered <- map %>%
+  semi_join(ogs, by = "group_id") %>%
+  mutate(gene_id = str_replace(gene_id, "-T\\d+$", ""))  # <<<<<< KEY FIX
+```
+
+```{r}
+library(tidyverse)
+
+base_url <- "https://raw.githubusercontent.com/urol-e5/MOSAiC/refs/heads/main/data/orthologs"
+
+apul <- read_csv(file.path(base_url, "apul-gene_count_matrix.csv"), show_col_types = FALSE)
+peve <- read_csv(file.path(base_url, "peve-gene_count_matrix.csv"), show_col_types = FALSE)
+ptua <- read_csv(file.path(base_url, "ptua-gene_count_matrix.csv"), show_col_types = FALSE)
+```
 
 
 
 
+```{r}
+library(tidyverse)
 
+# ensure gene_id format matches count matrices
+filtered <- filtered %>%
+  mutate(gene_id = str_replace(gene_id, "-T\\d+$", ""))
+
+# filter apul & add group_id as first column
+apul_filt <- apul %>%
+  inner_join(
+    filtered %>% filter(species == "Apul") %>% select(gene_id, group_id),
+    by = "gene_id"
+  ) %>%
+  relocate(group_id, .before = gene_id)   # <<<<<< KEY LINEter(species == "Apul") 
+
+
+# write to CSV
+write_csv(
+  apul_filt,
+  "../output/33-biomin-pathway-counts/apul_biomin_counts.csv")
+```
+
+
+```{r}
+library(tidyverse)
+
+# ensure gene_id in mapping file matches (remove transcript suffix)
+filtered <- filtered %>%
+  mutate(gene_id = str_replace(gene_id, "-T\\d+$", ""))
+
+# filter Peve matrix, normalize gene_id, join, move group_id to column 1
+peve_filt <- peve %>%
+  mutate(gene_id = str_replace(gene_id, "^gene-", "")) %>%   # <<<<< FIX HERE
+  inner_join(
+    filtered %>% filter(species == "Peve") %>% select(gene_id, group_id),
+    by = "gene_id"
+  ) %>%
+  relocate(group_id, .before = gene_id)
+
+# write to CSV
+write_csv(
+  peve_filt,
+  "../output/33-biomin-pathway-counts/peve_biomin_counts.csv"
+)
+```
+
+
+
+```{r}
+library(tidyverse)
+
+# ensure gene_id in mapping file matches count matrix format
+filtered <- filtered %>%
+  mutate(gene_id = str_replace(gene_id, "-T\\d+$", ""))
+
+# filter Ptua matrix, normalize gene_id, join, move group_id to column 1
+ptua_filt <- ptua %>%
+  mutate(gene_id = str_replace(gene_id, "^gene-", "")) %>%   # <<<<< KEY FIX
+  inner_join(
+    filtered %>%
+      filter(species == "Ptua") %>%
+      select(gene_id, group_id),
+    by = "gene_id"
+  ) %>%
+  relocate(group_id, .before = gene_id)
+
+
+# write to CSV
+write_csv(
+  ptua_filt,
+  "../output/33-biomin-pathway-counts/ptua_biomin_counts.csv"
+)
+```
