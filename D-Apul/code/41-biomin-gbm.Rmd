@@ -1,0 +1,61 @@
+---
+title: "41-Apul-biomin-gbm"
+output: html_document
+---
+
+## Load biomineralization counts and gene body methylation
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+
+biomin_path <- file.path("..", "..", "M-multi-species", "output", "33-biomin-pathway-counts", "apul_biomin_counts.csv")
+gbm_path <- file.path("..", "output", "40-Apul-Gene-Methylation", "Apul-gene-methylation_75pct.tsv")
+```
+
+## Read and join data
+
+```{r read-data}
+biomin_counts <- read_csv(biomin_path, show_col_types = FALSE)
+gbm_methylation <- read_tsv(gbm_path, show_col_types = FALSE)
+
+sample_cols <- intersect(names(biomin_counts), names(gbm_methylation))
+sample_cols <- sample_cols[grepl("^ACR", sample_cols)]
+
+biomin_long <- biomin_counts %>%
+  select(gene_id, all_of(sample_cols)) %>%
+  pivot_longer(
+    cols = -gene_id,
+    names_to = "sample_id",
+    values_to = "biomin_count"
+  )
+
+gbm_long <- gbm_methylation %>%
+  select(gene_id, all_of(sample_cols)) %>%
+  pivot_longer(
+    cols = -gene_id,
+    names_to = "sample_id",
+    values_to = "gbm_methylation"
+  )
+
+biomin_gbm <- inner_join(biomin_long, gbm_long, by = c("gene_id", "sample_id")) %>%
+  drop_na(gbm_methylation) %>%
+  separate(sample_id, into = c("colony_id", "timepoint"), sep = "-(?=TP)", remove = FALSE)
+```
+
+## Plot counts vs methylation by sample
+
+```{r biomin-gbm-plot, fig.width=10, fig.height=8}
+ggplot(biomin_gbm, aes(x = biomin_count, y = gbm_methylation, color = timepoint)) +
+  geom_point(alpha = 0.25, size = 1.9) +
+  geom_smooth(method = "lm", se = FALSE, color = "#000000", linewidth = 0.5) +
+  scale_x_continuous(trans = "log1p", labels = scales::comma) +
+  labs(
+    x = "Biomineralization count (log1p scale)",
+    y = "Gene body methylation (%)",
+    color = "Time point",
+    title = "Biomineralization gene counts vs. gene body methylation"
+  ) +
+  facet_wrap(~ colony_id) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom", legend.key.height = grid::unit(0.3, "cm"))
+```
