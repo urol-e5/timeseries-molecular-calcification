@@ -1,0 +1,367 @@
+---
+title: "34-biomin-pathway-compare"
+output: html_document
+date: "2025-11-29"
+---
+
+This notebook joins the biomineralization orthogroup count matrices that were produced for each species in script 33. The goal is to compare expression support for each biomineralization orthogroup across *Acropora pulchra* (apul), *Porites evermanni* (peve), and *Pocillopora tuahiniensis* (ptua).
+
+## Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+
+library(tidyverse)
+library(glue)
+```
+
+```{r paths}
+count_dir <- "../output/33-biomin-pathway-counts"
+output_dir <- "../output/34-biomin-pathway-compare"
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+species_lookup <- c(
+  apul = "Acropora pulchra",
+  peve = "Porites evermanni",
+  ptua = "Pocillopora tuahiniensis"
+)
+```
+
+## Available count matrices
+
+```{r input-files}
+count_files <- tibble(
+  file = list.files(count_dir, pattern = "_biomin_counts\\.csv$", full.names = TRUE)
+) %>%
+  mutate(
+    filename = basename(file),
+    species_code = str_extract(filename, "^[a-z]+"),
+    species = species_lookup[species_code]
+  )
+
+count_files
+```
+
+## Join counts by orthogroup
+
+```{r load-and-join}
+counts_long <- count_files %>%
+  mutate(data = map(file, ~ read_csv(.x, show_col_types = FALSE))) %>%
+  mutate(data = map2(data, species_code, ~ .x %>%
+                       pivot_longer(
+                         cols = -c(group_id, gene_id),
+                         names_to = "sample_id",
+                         values_to = "count"
+                       ) %>%
+                       mutate(species_code = .y))) %>%
+  select(data) %>%
+  unnest(data) %>%
+  mutate(
+    species = species_lookup[species_code],
+    colony_id = str_remove(sample_id, "-TP\\d+$"),
+    timepoint = parse_number(str_extract(sample_id, "TP\\d+$")),
+    timepoint_label = factor(glue("TP{timepoint}"), levels = glue("TP{1:4}")),
+    gene_label = glue("{group_id} | {gene_id}"),
+    log10_count = log10(count + 1)
+  )
+
+counts_long
+```
+
+The long table above contains every sample-level count paired with its orthogroup and species label, enabling direct comparisons across species.
+
+## Species-level summaries
+
+```{r species-summary}
+species_summary <- counts_long %>%
+  group_by(group_id, species_code, species) %>%
+  summarise(
+    mean_count = mean(count),
+    median_count = median(count),
+    sd_count = sd(count),
+    n_samples = n(),
+    .groups = "drop"
+  )
+
+species_wide <- species_summary %>%
+  select(group_id, species_code, mean_count) %>%
+  pivot_wider(
+    names_from = species_code,
+    values_from = mean_count,
+    names_glue = "{species_code}_mean"
+  )
+
+spread_summary <- species_wide %>%
+  rowwise() %>%
+  mutate(
+    mean_spread = max(c_across(ends_with("_mean")), na.rm = TRUE) -
+      min(c_across(ends_with("_mean")), na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  left_join(
+    species_summary %>%
+      group_by(group_id) %>%
+      slice_max(order_by = mean_count, n = 1, with_ties = FALSE) %>%
+      select(group_id, top_species = species, top_mean = mean_count),
+    by = "group_id"
+  ) %>%
+  arrange(desc(mean_spread))
+
+species_summary
+```
+
+```{r write-output}
+write_csv(species_summary, file.path(output_dir, "biomin_counts_species_summary_long.csv"))
+write_csv(species_wide, file.path(output_dir, "biomin_counts_species_summary_wide.csv"))
+write_csv(spread_summary, file.path(output_dir, "biomin_counts_species_max_spread.csv"))
+```
+
+## Timepoint dynamics
+
+```{r timepoint-summary}
+timepoint_summary <- counts_long %>%
+  filter(!is.na(timepoint)) %>%
+  group_by(group_id, species, timepoint, timepoint_label) %>%
+  summarise(
+    mean_count = mean(count),
+    median_count = median(count),
+    sd_count = sd(count),
+    n_samples = n(),
+    se_count = sd_count / sqrt(n_samples),
+    .groups = "drop"
+  )
+
+timepoint_summary
+```
+
+```{r timepoint-plot, fig.width=11, fig.height=7}
+timepoint_plot_groups <- spread_summary %>%
+  semi_join(
+    timepoint_summary %>%
+      distinct(group_id, species) %>%
+      count(group_id) %>%
+      filter(n == length(species_lookup)),
+    by = "group_id"
+  ) %>%
+  slice_head(n = 12) %>%
+  pull(group_id)
+
+timepoint_summary %>%
+  filter(group_id %in% timepoint_plot_groups) %>%
+  mutate(group_id = fct_reorder(group_id, mean_count, .fun = max, .desc = TRUE)) %>%
+  ggplot(aes(x = timepoint_label, y = mean_count, color = species, group = species)) +
+  geom_errorbar(aes(ymin = pmax(mean_count - se_count, 0),
+                    ymax = mean_count + se_count),
+                width = 0.15, linewidth = 0.4, alpha = 0.6) +
+  geom_line(linewidth = 0.7) +
+  geom_point(size = 2) +
+  facet_wrap(~ group_id, scales = "free_y") +
+  labs(
+    x = "Timepoint",
+    y = "Mean count",
+    title = "Timepoint trends for orthogroups with largest inter-species spread",
+    subtitle = "Lines trace species-level mean counts across sequential sampling points"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+```{r timepoint-distribution, fig.width=10, fig.height=6}
+counts_long %>%
+  filter(!is.na(timepoint_label)) %>%
+  ggplot(aes(x = timepoint_label, y = log10_count, fill = species)) +
+  geom_boxplot(alpha = 0.55, outlier_shape = NA) +
+  labs(
+    x = "Timepoint",
+    y = "log10(count + 1)",
+    title = "Sample-level distribution of biomineralization counts by timepoint"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+## Largest inter-species differences
+
+```{r top-differences}
+spread_summary %>%
+  select(group_id, mean_spread, top_species, top_mean) %>%
+  slice_head(n = 15)
+```
+
+```{r diff-plot, fig.width=10, fig.height=7}
+top_groups <- spread_summary %>%
+  slice_head(n = 20) %>%
+  pull(group_id)
+
+plot_data <- species_summary %>%
+  filter(group_id %in% top_groups)
+
+plot_data %>%
+  mutate(group_id = fct_reorder(group_id, mean_count, .fun = max, .desc = TRUE)) %>%
+  ggplot(aes(x = species, y = group_id, fill = mean_count)) +
+  geom_tile(color = "grey30") +
+  scale_fill_viridis_c(trans = "log10", option = "plasma", name = "mean counts") +
+  labs(
+    x = "Species",
+    y = "Orthogroup",
+    title = "Orthogroups with largest mean-count spread across species"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+## Sample-level distributions
+
+```{r density}
+counts_long %>%
+  ggplot(aes(x = log10_count, fill = species)) +
+  geom_density(alpha = 0.4) +
+  labs(
+    x = "log10(count + 1)",
+    y = "Density",
+    title = "Distribution of biomineralization counts across species"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+## Gene-level overview across species and timepoints
+
+```{r gene-heatmap, fig.width=12, fig.height=16}
+gene_timepoint_means <- counts_long %>%
+  filter(!is.na(timepoint_label)) %>%
+  group_by(group_id, species, species_code, timepoint_label) %>%
+  summarise(
+    mean_log10 = mean(log10_count),
+    .groups = "drop"
+  ) %>%
+  group_by(group_id, species) %>%
+  filter(n_distinct(timepoint_label) == 4) %>%
+  ungroup() %>%
+  group_by(group_id) %>%
+  filter(n_distinct(species) == length(species_lookup)) %>%
+  ungroup() %>%
+  mutate(
+    gene_axis = fct_reorder(group_id, parse_number(group_id))
+  )
+
+gene_timepoint_means %>%
+  ggplot(aes(x = timepoint_label, y = gene_axis, fill = mean_log10)) +
+  geom_tile(color = "grey25", linewidth = 0.05) +
+  facet_wrap(~ species, scales = "free_y") +
+  scale_fill_viridis_c(option = "inferno", name = "mean log10(count)", na.value = "grey90") +
+  labs(
+    x = "Timepoint",
+    y = "group_id",
+    title = "Gene-level biomineralization expression",
+    subtitle = "Every tile is a gene within an orthogroup; shared group_ids align across species panels"
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    strip.text = element_text(face = "bold"),
+    axis.text.y = element_text(size = 5)
+  )
+```
+
+## Clustered species-pattern heatmap
+
+```{r species-cluster-heatmap, fig.width=14, fig.height=10}
+species_time_means <- counts_long %>%
+  filter(!is.na(timepoint_label)) %>%
+  group_by(group_id, species, timepoint_label) %>%
+  summarise(mean_log10 = mean(log10_count), .groups = "drop") %>%
+  group_by(group_id, species) %>%
+  filter(n_distinct(timepoint_label) == 4) %>%
+  ungroup() %>%
+  group_by(group_id) %>%
+  filter(n_distinct(species) == length(species_lookup)) %>%
+  ungroup() %>%
+  mutate(col_key = glue("{species} | {timepoint_label}"))
+
+col_levels <- species_time_means %>%
+  distinct(species, timepoint_label, col_key) %>%
+  arrange(species, timepoint_label) %>%
+  pull(col_key)
+
+heatmap_wide <- species_time_means %>%
+  select(group_id, col_key, mean_log10) %>%
+  pivot_wider(names_from = col_key, values_from = mean_log10)
+
+heatmap_matrix <- heatmap_wide %>%
+  select(-group_id) %>%
+  as.matrix()
+
+row_means <- rowMeans(heatmap_matrix, na.rm = TRUE)
+row_means[is.na(row_means)] <- 0
+na_idx <- which(is.na(heatmap_matrix), arr.ind = TRUE)
+if (length(na_idx) > 0) {
+  heatmap_matrix[na_idx] <- row_means[na_idx[, 1]]
+}
+
+row_order <- hclust(dist(heatmap_matrix))$order
+ordered_groups <- heatmap_wide$group_id[row_order]
+
+species_time_means %>%
+  mutate(
+    col_key = factor(col_key, levels = col_levels),
+    group_id = factor(group_id, levels = ordered_groups)
+  ) %>%
+  ggplot(aes(x = col_key, y = group_id, fill = mean_log10)) +
+  geom_tile(color = "grey15", linewidth = 0.05) +
+  scale_fill_viridis_c(option = "magma", name = "mean log10(count)", na.value = "grey90") +
+  labs(
+    x = "Species | Timepoint",
+    y = "group_id (clustered by species pattern)",
+    title = "Clustered biomineralization patterns across species and timepoints",
+    subtitle = "Rows ordered via hierarchical clustering; columns keep species-timepoint blocks together"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 55, hjust = 1),
+    panel.grid = element_blank()
+  )
+```
+
+## Z-scored temporal-pattern heatmap
+
+```{r zscore-cluster-heatmap, fig.width=14, fig.height=10}
+zscore_matrix <- species_time_means %>%
+  select(group_id, species, timepoint_label, mean_log10) %>%
+  mutate(col_key = glue("{species} | {timepoint_label}")) %>%
+  select(group_id, col_key, mean_log10) %>%
+  pivot_wider(names_from = col_key, values_from = mean_log10)
+
+z_mat <- zscore_matrix %>%
+  select(-group_id) %>%
+  as.matrix()
+
+row_means <- rowMeans(z_mat, na.rm = TRUE)
+row_sds <- apply(z_mat, 1, sd, na.rm = TRUE)
+row_sds[row_sds == 0] = 1
+z_mat <- sweep(z_mat, 1, row_means, FUN = "-")
+z_mat <- sweep(z_mat, 1, row_sds, FUN = "/")
+
+row_order_z <- hclust(dist(z_mat))$order
+ordered_groups_z <- zscore_matrix$group_id[row_order_z]
+
+zscore_long <- as_tibble(z_mat) %>%
+  mutate(group_id = zscore_matrix$group_id) %>%
+  pivot_longer(-group_id, names_to = "col_key", values_to = "zscore") %>%
+  mutate(col_key = factor(col_key, levels = col_levels))
+
+zscore_long %>%
+  mutate(group_id = factor(group_id, levels = ordered_groups_z)) %>%
+  ggplot(aes(x = col_key, y = group_id, fill = zscore)) +
+  geom_tile(color = "grey20", linewidth = 0.05) +
+  scale_fill_distiller(palette = "RdBu", direction = -1, name = "z-score") +
+  labs(
+    x = "Species | Timepoint",
+    y = "group_id (clustered on z-scored profiles)",
+    title = "Z-scored biomineralization patterns across species and timepoints",
+    subtitle = "Each orthogroup row normalized to zero mean, unit variance before clustering"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 55, hjust = 1),
+    panel.grid = element_blank()
+  )
+```
+
+The exported CSVs in `../output/34-biomin-pathway-compare/` capture the joined counts and summary tables so downstream analyses can focus on orthogroups that show the strongest inter-species differences.

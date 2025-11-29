@@ -46,7 +46,7 @@ biomin_gbm <- inner_join(biomin_long, gbm_long, by = c("gene_id", "sample_id")) 
 
 ```{r biomin-gbm-plot, fig.width=10, fig.height=8}
 ggplot(biomin_gbm, aes(x = biomin_count, y = gbm_methylation, color = timepoint)) +
-  geom_point(alpha = 0.25, size = 1.9) +
+  geom_point(alpha = 0.25, size = 0.6) +
   geom_smooth(method = "lm", se = FALSE, color = "#000000", linewidth = 0.5) +
   scale_x_continuous(trans = "log1p", labels = scales::comma) +
   labs(
@@ -58,4 +58,19 @@ ggplot(biomin_gbm, aes(x = biomin_count, y = gbm_methylation, color = timepoint)
   facet_wrap(~ colony_id) +
   theme_minimal(base_size = 11) +
   theme(legend.position = "bottom", legend.key.height = grid::unit(0.3, "cm"))
+```
+
+## Density view of counts vs methylation
+
+```{r biomin-gbm-density, fig.width=7, fig.height=5}
+ggplot(biomin_gbm, aes(x = biomin_count, y = gbm_methylation)) +
+  stat_bin_2d(bins = 80) +
+  scale_fill_gradient(low = "#f7fbff", high = "#08306b", name = "Gene count") +
+  scale_x_continuous(trans = "log1p", labels = scales::comma) +
+  labs(
+    x = "Biomineralization count (log1p scale)",
+    y = "Gene body methylation (%)",
+    title = "Density of biomineralization counts vs. methylation"
+  ) +
+  theme_minimal(base_size = 11)
 ```
