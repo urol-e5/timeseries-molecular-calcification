@@ -1,0 +1,744 @@
+---
+title: "Gene Expression vs Gene Body Methylation Plots"
+author: "Steven Roberts"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Overview
+
+This script creates x-y plots of gene expression versus gene body methylation for three coral species:
+- *Acropora pulchra*
+- *Porites evermanni*
+- *Pocillopora tuahiniensis*
+
+Biomineralization genes are highlighted in each plot.
+
+## Load Libraries
+
+```{r load-libraries}
+library(tidyverse)
+```
+
+## Load Data
+
+### Gene Expression Count Matrices
+
+```{r load-expression-data}
+# Acropora pulchra
+apul_expression <- read_csv("https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/D-Apul/output/02.20-D-Apul-RNAseq-alignment-HiSat2/apul-gene_count_matrix.csv")
+
+# Porites evermanni
+peve_expression <- read_csv("https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/E-Peve/output/02.20-E-Peve-RNAseq-alignment-HiSat2/peve-gene_count_matrix.csv")
+
+# Pocillopora tuahiniensis
+ptua_expression <- read_csv("https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/F-Ptua/output/02.20-F-Ptua-RNAseq-alignment-HiSat2/ptua-gene_count_matrix.csv")
+```
+
+### Gene Body Methylation Data
+
+```{r load-methylation-data}
+# Acropora pulchra
+apul_methylation <- read_tsv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/D-Apul/output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv")
+
+# Porites evermanni
+peve_methylation <- read_tsv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/E-Peve/output/15-Peve-Gene-Methylation/Peve-gene-methylation_75pct.tsv")
+
+# Pocillopora tuahiniensis
+ptua_methylation <- read_tsv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/F-Ptua/output/09-Ptua-Gene-Methylation/Ptua-gene-methylation_75pct.tsv")
+```
+
+### Biomineralization Gene Lists
+
+```{r load-biomin-genes}
+# Acropora pulchra
+apul_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/apul_biomin_counts.csv")
+
+# Porites evermanni
+peve_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/peve_biomin_counts.csv")
+
+# Pocillopora tuahiniensis
+ptua_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/ptua_biomin_counts.csv")
+```
+
+## Data Preview
+
+```{r preview-data}
+# Preview expression data structure
+head(apul_expression)
+head(peve_expression)
+head(ptua_expression)
+
+# Preview methylation data structure
+head(apul_methylation)
+head(peve_methylation)
+head(ptua_methylation)
+
+# Preview biomin gene lists
+head(apul_biomin)
+head(peve_biomin)
+head(ptua_biomin)
+```
+
+## Prepare Data for Plotting
+
+### Acropora pulchra
+
+```{r prepare-apul-data}
+# Calculate mean expression across samples for each gene
+apul_expression_mean <- apul_expression %>%
+  pivot_longer(-gene_id, names_to = "sample", values_to = "count") %>%
+  group_by(gene_id) %>%
+  summarize(mean_expression = mean(count, na.rm = TRUE)) %>%
+  mutate(log_expression = log10(mean_expression + 1))
+
+# Calculate mean methylation across samples for each gene
+apul_methylation_mean <- apul_methylation %>%
+  pivot_longer(-gene_id, names_to = "sample", values_to = "methylation") %>%
+  group_by(gene_id) %>%
+  summarize(mean_methylation = mean(methylation, na.rm = TRUE))
+
+# Join expression and methylation data
+apul_combined <- apul_expression_mean %>%
+  inner_join(apul_methylation_mean, by = "gene_id")
+
+# Get biomin gene IDs from the gene_id column (second column)
+apul_biomin_genes <- apul_biomin %>%
+  pull(gene_id) %>%
+  unique()
+
+# Check how many biomin genes we have
+cat("Number of biomin genes:", length(apul_biomin_genes), "\n")
+cat("Sample biomin gene IDs:\n")
+head(apul_biomin_genes)
+
+# Check for matches
+cat("\nNumber of matches in combined data:", sum(apul_combined$gene_id %in% apul_biomin_genes), "\n")
+
+# Add biomin indicator
+apul_combined <- apul_combined %>%
+  mutate(is_biomin = gene_id %in% apul_biomin_genes)
+
+head(apul_combined)
+table(apul_combined$is_biomin)
+```
+
+### Porites evermanni
+
+```{r prepare-peve-data}
+# Calculate mean expression across samples for each gene
+peve_expression_mean <- peve_expression %>%
+  pivot_longer(-gene_id, names_to = "sample", values_to = "count") %>%
+  group_by(gene_id) %>%
+  summarize(mean_expression = mean(count, na.rm = TRUE)) %>%
+  mutate(log_expression = log10(mean_expression + 1))
+
+# Calculate mean methylation across samples for each gene
+peve_methylation_mean <- peve_methylation %>%
+  pivot_longer(-gene_id, names_to = "sample", values_to = "methylation") %>%
+  group_by(gene_id) %>%
+  summarize(mean_methylation = mean(methylation, na.rm = TRUE))
+
+# Join expression and methylation data
+peve_combined <- peve_expression_mean %>%
+  inner_join(peve_methylation_mean, by = "gene_id")
+
+# Get biomin gene IDs - add "gene-" prefix to match expression data format
+peve_biomin_genes <- peve_biomin %>%
+  pull(gene_id) %>%
+  unique() %>%
+  paste0("gene-", .)
+
+# Check how many biomin genes we have
+cat("Number of biomin genes:", length(peve_biomin_genes), "\n")
+cat("Sample biomin gene IDs (with prefix):\n")
+head(peve_biomin_genes)
+cat("\nSample expression gene IDs:\n")
+head(peve_combined$gene_id)
+cat("\nNumber of matches in combined data:", sum(peve_combined$gene_id %in% peve_biomin_genes), "\n")
+
+# Add biomin indicator
+peve_combined <- peve_combined %>%
+  mutate(is_biomin = gene_id %in% peve_biomin_genes)
+
+head(peve_combined)
+table(peve_combined$is_biomin)
+```
+
+### Pocillopora tuahiniensis
+
+```{r prepare-ptua-data}
+# Calculate mean expression across samples for each gene
+ptua_expression_mean <- ptua_expression %>%
+  pivot_longer(-gene_id, names_to = "sample", values_to = "count") %>%
+  group_by(gene_id) %>%
+  summarize(mean_expression = mean(count, na.rm = TRUE)) %>%
+  mutate(log_expression = log10(mean_expression + 1))
+
+# Calculate mean methylation across samples for each gene
+ptua_methylation_mean <- ptua_methylation %>%
+  pivot_longer(-gene_id, names_to = "sample", values_to = "methylation") %>%
+  group_by(gene_id) %>%
+  summarize(mean_methylation = mean(methylation, na.rm = TRUE))
+
+# Join expression and methylation data
+ptua_combined <- ptua_expression_mean %>%
+  inner_join(ptua_methylation_mean, by = "gene_id")
+
+# Get biomin gene IDs - need to add "gene-" prefix to match expression data format
+# Biomin IDs: Pocillopora_meandrina_HIv1___RNAseq.g21004.t1
+# Expression IDs: gene-Pocillopora_meandrina_HIv1___RNAseq.g20905.t1
+ptua_biomin_genes <- ptua_biomin %>%
+  pull(gene_id) %>%
+  unique() %>%
+  paste0("gene-", .)
+
+# Check how many biomin genes we have
+cat("Number of biomin genes:", length(ptua_biomin_genes), "\n")
+cat("Sample biomin gene IDs (with prefix):\n")
+head(ptua_biomin_genes)
+cat("\nSample expression gene IDs:\n")
+head(ptua_combined$gene_id)
+cat("\nNumber of matches in combined data:", sum(ptua_combined$gene_id %in% ptua_biomin_genes), "\n")
+
+# Add biomin indicator
+ptua_combined <- ptua_combined %>%
+  mutate(is_biomin = gene_id %in% ptua_biomin_genes)
+
+head(ptua_combined)
+table(ptua_combined$is_biomin)
+```
+
+## Create Plots
+
+### Acropora pulchra
+
+```{r plot-apul, fig.width=10, fig.height=8}
+ggplot(apul_combined, aes(x = mean_methylation, y = log_expression, color = is_biomin)) +
+  geom_point(data = filter(apul_combined, !is_biomin), alpha = 0.3, size = 1) +
+  geom_point(data = filter(apul_combined, is_biomin), alpha = 0.8, size = 2) +
+  scale_color_manual(values = c("FALSE" = "gray70", "TRUE" = "darkred"),
+                     labels = c("FALSE" = "Other genes", "TRUE" = "Biomineralization genes"),
+                     name = "Gene Type") +
+  labs(title = "Gene Expression vs Gene Body Methylation - Acropora pulchra",
+       x = "Gene Body Methylation (%)",
+       y = "Log10(Mean Expression + 1)") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        plot.title = element_text(face = "italic", hjust = 0.5))
+```
+
+### Porites evermanni
+
+```{r plot-peve, fig.width=10, fig.height=8}
+ggplot(peve_combined, aes(x = mean_methylation, y = log_expression, color = is_biomin)) +
+  geom_point(data = filter(peve_combined, !is_biomin), alpha = 0.3, size = 1) +
+  geom_point(data = filter(peve_combined, is_biomin), alpha = 0.8, size = 2) +
+  scale_color_manual(values = c("FALSE" = "gray70", "TRUE" = "darkblue"),
+                     labels = c("FALSE" = "Other genes", "TRUE" = "Biomineralization genes"),
+                     name = "Gene Type") +
+  labs(title = "Gene Expression vs Gene Body Methylation - Porites evermanni",
+       x = "Gene Body Methylation (%)",
+       y = "Log10(Mean Expression + 1)") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        plot.title = element_text(face = "italic", hjust = 0.5))
+```
+
+### Pocillopora tuahiniensis
+
+```{r plot-ptua, fig.width=10, fig.height=8}
+ggplot(ptua_combined, aes(x = mean_methylation, y = log_expression, color = is_biomin)) +
+  geom_point(data = filter(ptua_combined, !is_biomin), alpha = 0.3, size = 1) +
+  geom_point(data = filter(ptua_combined, is_biomin), alpha = 0.8, size = 2) +
+  scale_color_manual(values = c("FALSE" = "gray70", "TRUE" = "darkgreen"),
+                     labels = c("FALSE" = "Other genes", "TRUE" = "Biomineralization genes"),
+                     name = "Gene Type") +
+  labs(title = "Gene Expression vs Gene Body Methylation - Pocillopora tuahiniensis",
+       x = "Gene Body Methylation (%)",
+       y = "Log10(Mean Expression + 1)") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        plot.title = element_text(face = "italic", hjust = 0.5))
+```
+
+## Combined Panel Plot
+
+```{r combined-plot, fig.width=14, fig.height=5}
+# Add species identifier to each dataset
+apul_combined <- apul_combined %>% mutate(species = "Acropora pulchra")
+peve_combined <- peve_combined %>% mutate(species = "Porites evermanni")
+ptua_combined <- ptua_combined %>% mutate(species = "Pocillopora tuahiniensis")
+
+# Combine all data
+all_combined <- bind_rows(apul_combined, peve_combined, ptua_combined)
+
+# Create faceted plot
+ggplot(all_combined, aes(x = mean_methylation, y = log_expression, color = is_biomin)) +
+  geom_point(data = filter(all_combined, !is_biomin), alpha = 0.3, size = 1) +
+  geom_point(data = filter(all_combined, is_biomin), alpha = 0.8, size = 2) +
+  scale_color_manual(values = c("FALSE" = "gray70", "TRUE" = "darkred"),
+                     labels = c("FALSE" = "Other genes", "TRUE" = "Biomineralization genes"),
+                     name = "Gene Type") +
+  facet_wrap(~species, scales = "free_x") +
+  labs(title = "Gene Expression vs Gene Body Methylation",
+       x = "Gene Body Methylation (%)",
+       y = "Log10(Mean Expression + 1)") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "italic", size = 12))
+```
+
+## Summary Statistics
+
+```{r summary-stats}
+# Summary for each species
+summary_stats <- all_combined %>%
+  group_by(species, is_biomin) %>%
+  summarize(
+    n_genes = n(),
+    avg_methylation = mean(mean_methylation, na.rm = TRUE),
+    sd_methylation = sd(mean_methylation, na.rm = TRUE),
+    avg_expression = mean(log_expression, na.rm = TRUE),
+    sd_expression = sd(log_expression, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+summary_stats %>%
+  knitr::kable(digits = 3, 
+               col.names = c("Species", "Biomin Gene", "N", "Mean Meth", "SD Meth", "Mean Expr", "SD Expr"))
+```
+
+## Ortholog Comparison Across Species
+
+This section compares biomineralization orthologs (same group_id) across the three species.
+
+```{r prepare-ortholog-data}
+# Create biomin data with expression and methylation for each species
+# Include group_id for ortholog matching
+
+# Acropora pulchra biomin with expression/methylation
+apul_biomin_data <- apul_biomin %>%
+  select(group_id, gene_id) %>%
+  inner_join(apul_expression_mean, by = "gene_id") %>%
+  inner_join(apul_methylation_mean, by = "gene_id") %>%
+  mutate(species = "A. pulchra") %>%
+  select(group_id, gene_id, species, mean_expression, log_expression, mean_methylation)
+
+# Porites evermanni biomin with expression/methylation  
+# Need to add "gene-" prefix for matching
+peve_biomin_data <- peve_biomin %>%
+  select(group_id, gene_id) %>%
+  mutate(gene_id_match = paste0("gene-", gene_id)) %>%
+  inner_join(peve_expression_mean, by = c("gene_id_match" = "gene_id")) %>%
+  inner_join(peve_methylation_mean, by = c("gene_id_match" = "gene_id")) %>%
+  mutate(species = "P. evermanni") %>%
+  select(group_id, gene_id = gene_id_match, species, mean_expression, log_expression, mean_methylation)
+
+# Pocillopora tuahiniensis biomin with expression/methylation
+# Need to add "gene-" prefix for matching
+ptua_biomin_data <- ptua_biomin %>%
+  select(group_id, gene_id) %>%
+  mutate(gene_id_match = paste0("gene-", gene_id)) %>%
+  inner_join(ptua_expression_mean, by = c("gene_id_match" = "gene_id")) %>%
+  inner_join(ptua_methylation_mean, by = c("gene_id_match" = "gene_id")) %>%
+  mutate(species = "P. tuahiniensis") %>%
+  select(group_id, gene_id = gene_id_match, species, mean_expression, log_expression, mean_methylation)
+
+# Combine all biomin data
+all_biomin_orthologs <- bind_rows(apul_biomin_data, peve_biomin_data, ptua_biomin_data)
+
+cat("Number of biomin genes per species:\n")
+all_biomin_orthologs %>% count(species)
+
+# Find orthologs present in all three species
+orthologs_all_species <- all_biomin_orthologs %>%
+  group_by(group_id) %>%
+  summarize(n_species = n_distinct(species)) %>%
+  filter(n_species == 3) %>%
+  pull(group_id)
+
+cat("\nNumber of ortholog groups present in all 3 species:", length(orthologs_all_species), "\n")
+
+# Filter to only orthologs in all species
+shared_orthologs <- all_biomin_orthologs %>%
+  filter(group_id %in% orthologs_all_species)
+
+cat("\nShared ortholog groups:\n")
+print(orthologs_all_species)
+```
+
+### Ortholog Expression vs Methylation - Connected by Ortholog Group
+
+```{r ortholog-connected-plot, fig.width=12, fig.height=8}
+# Plot with lines connecting orthologs across species
+ggplot(shared_orthologs, aes(x = mean_methylation, y = log_expression, color = species)) +
+  geom_line(aes(group = group_id), color = "gray70", alpha = 0.5) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_manual(values = c("A. pulchra" = "darkred", 
+                                 "P. evermanni" = "darkblue", 
+                                 "P. tuahiniensis" = "darkgreen")) +
+  labs(title = "Biomineralization Orthologs Across Species",
+       subtitle = "Lines connect the same ortholog group across species",
+       x = "Mean Gene Body Methylation (%)",
+       y = "Log10(Mean Expression + 1)",
+       color = "Species") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5))
+```
+
+### Pairwise Species Comparisons for Shared Orthologs
+
+```{r ortholog-pairwise-data}
+# Reshape data to wide format for pairwise comparisons
+orthologs_wide <- shared_orthologs %>%
+  select(group_id, species, log_expression, mean_methylation) %>%
+  pivot_wider(names_from = species, 
+              values_from = c(log_expression, mean_methylation),
+              names_sep = "_")
+
+head(orthologs_wide)
+```
+
+```{r ortholog-expression-comparison, fig.width=14, fig.height=5}
+# Expression comparisons
+p1 <- ggplot(orthologs_wide, aes(x = `log_expression_A. pulchra`, y = `log_expression_P. evermanni`)) +
+  geom_point(alpha = 0.7, color = "purple") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "A. pulchra vs P. evermanni",
+       x = "A. pulchra Expression",
+       y = "P. evermanni Expression") +
+  theme_minimal() +
+  coord_equal()
+
+p2 <- ggplot(orthologs_wide, aes(x = `log_expression_A. pulchra`, y = `log_expression_P. tuahiniensis`)) +
+  geom_point(alpha = 0.7, color = "orange") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "A. pulchra vs P. tuahiniensis",
+       x = "A. pulchra Expression",
+       y = "P. tuahiniensis Expression") +
+  theme_minimal() +
+  coord_equal()
+
+p3 <- ggplot(orthologs_wide, aes(x = `log_expression_P. evermanni`, y = `log_expression_P. tuahiniensis`)) +
+  geom_point(alpha = 0.7, color = "cyan4") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "P. evermanni vs P. tuahiniensis",
+       x = "P. evermanni Expression",
+       y = "P. tuahiniensis Expression") +
+  theme_minimal() +
+  coord_equal()
+
+# Combine plots
+library(patchwork)
+p1 + p2 + p3 + 
+  plot_annotation(title = "Expression of Biomineralization Orthologs - Pairwise Comparisons",
+                  theme = theme(plot.title = element_text(hjust = 0.5, size = 14)))
+```
+
+```{r ortholog-methylation-comparison, fig.width=14, fig.height=5}
+# Methylation comparisons
+m1 <- ggplot(orthologs_wide, aes(x = `mean_methylation_A. pulchra`, y = `mean_methylation_P. evermanni`)) +
+  geom_point(alpha = 0.7, color = "purple") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "A. pulchra vs P. evermanni",
+       x = "A. pulchra Methylation",
+       y = "P. evermanni Methylation") +
+  theme_minimal() +
+  coord_equal()
+
+m2 <- ggplot(orthologs_wide, aes(x = `mean_methylation_A. pulchra`, y = `mean_methylation_P. tuahiniensis`)) +
+  geom_point(alpha = 0.7, color = "orange") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "A. pulchra vs P. tuahiniensis",
+       x = "A. pulchra Methylation",
+       y = "P. tuahiniensis Methylation") +
+  theme_minimal() +
+  coord_equal()
+
+m3 <- ggplot(orthologs_wide, aes(x = `mean_methylation_P. evermanni`, y = `mean_methylation_P. tuahiniensis`)) +
+  geom_point(alpha = 0.7, color = "cyan4") +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_smooth(method = "lm", se = TRUE, color = "black") +
+  labs(title = "P. evermanni vs P. tuahiniensis",
+       x = "P. evermanni Methylation",
+       y = "P. tuahiniensis Methylation") +
+  theme_minimal() +
+  coord_equal()
+
+# Combine plots
+m1 + m2 + m3 + 
+  plot_annotation(title = "Methylation of Biomineralization Orthologs - Pairwise Comparisons",
+                  theme = theme(plot.title = element_text(hjust = 0.5, size = 14)))
+```
+
+### Correlation Statistics for Orthologs
+
+```{r ortholog-correlations}
+cat("=== EXPRESSION CORRELATIONS ===\n\n")
+
+cat("A. pulchra vs P. evermanni:\n")
+cor_ap_pe_expr <- cor.test(orthologs_wide$`log_expression_A. pulchra`, 
+                           orthologs_wide$`log_expression_P. evermanni`, 
+                           use = "complete.obs")
+cat("  r =", round(cor_ap_pe_expr$estimate, 3), ", p =", format(cor_ap_pe_expr$p.value, digits = 3), "\n\n")
+
+cat("A. pulchra vs P. tuahiniensis:\n")
+cor_ap_pt_expr <- cor.test(orthologs_wide$`log_expression_A. pulchra`, 
+                           orthologs_wide$`log_expression_P. tuahiniensis`, 
+                           use = "complete.obs")
+cat("  r =", round(cor_ap_pt_expr$estimate, 3), ", p =", format(cor_ap_pt_expr$p.value, digits = 3), "\n\n")
+
+cat("P. evermanni vs P. tuahiniensis:\n")
+cor_pe_pt_expr <- cor.test(orthologs_wide$`log_expression_P. evermanni`, 
+                           orthologs_wide$`log_expression_P. tuahiniensis`, 
+                           use = "complete.obs")
+cat("  r =", round(cor_pe_pt_expr$estimate, 3), ", p =", format(cor_pe_pt_expr$p.value, digits = 3), "\n\n")
+
+cat("=== METHYLATION CORRELATIONS ===\n\n")
+
+cat("A. pulchra vs P. evermanni:\n")
+cor_ap_pe_meth <- cor.test(orthologs_wide$`mean_methylation_A. pulchra`, 
+                           orthologs_wide$`mean_methylation_P. evermanni`, 
+                           use = "complete.obs")
+cat("  r =", round(cor_ap_pe_meth$estimate, 3), ", p =", format(cor_ap_pe_meth$p.value, digits = 3), "\n\n")
+
+cat("A. pulchra vs P. tuahiniensis:\n")
+cor_ap_pt_meth <- cor.test(orthologs_wide$`mean_methylation_A. pulchra`, 
+                           orthologs_wide$`mean_methylation_P. tuahiniensis`, 
+                           use = "complete.obs")
+cat("  r =", round(cor_ap_pt_meth$estimate, 3), ", p =", format(cor_ap_pt_meth$p.value, digits = 3), "\n\n")
+
+cat("P. evermanni vs P. tuahiniensis:\n")
+cor_pe_pt_meth <- cor.test(orthologs_wide$`mean_methylation_P. evermanni`, 
+                           orthologs_wide$`mean_methylation_P. tuahiniensis`, 
+                           use = "complete.obs")
+cat("  r =", round(cor_pe_pt_meth$estimate, 3), ", p =", format(cor_pe_pt_meth$p.value, digits = 3), "\n")
+```
+
+### Ortholog Summary Table
+
+```{r ortholog-table}
+# Create a summary table of all shared orthologs
+ortholog_summary <- orthologs_wide %>%
+  mutate(
+    expr_range = pmax(`log_expression_A. pulchra`, `log_expression_P. evermanni`, `log_expression_P. tuahiniensis`, na.rm = TRUE) -
+                 pmin(`log_expression_A. pulchra`, `log_expression_P. evermanni`, `log_expression_P. tuahiniensis`, na.rm = TRUE),
+    meth_range = pmax(`mean_methylation_A. pulchra`, `mean_methylation_P. evermanni`, `mean_methylation_P. tuahiniensis`, na.rm = TRUE) -
+                 pmin(`mean_methylation_A. pulchra`, `mean_methylation_P. evermanni`, `mean_methylation_P. tuahiniensis`, na.rm = TRUE)
+  ) %>%
+  arrange(desc(expr_range))
+
+cat("Shared biomineralization orthologs (sorted by expression variability across species):\n\n")
+ortholog_summary %>%
+  knitr::kable(digits = 2)
+```
+
+## Data Validation
+
+This section verifies that for each species, a given point in the plot truly represents the same gene from both the expression and methylation datasets.
+
+### Acropora pulchra - Validation
+
+```{r validate-apul}
+# Pick a random gene from the combined dataset
+set.seed(42)
+apul_test_gene <- sample(apul_combined$gene_id, 1)
+
+cat("=== VALIDATION FOR ACROPORA PULCHRA ===\n")
+cat("Test gene ID:", apul_test_gene, "\n\n")
+
+# Get raw expression data for this gene
+cat("--- Raw Expression Data ---\n")
+apul_expr_raw <- apul_expression %>% 
+  filter(gene_id == apul_test_gene)
+print(apul_expr_raw)
+
+# Get raw methylation data for this gene
+cat("\n--- Raw Methylation Data ---\n")
+apul_meth_raw <- apul_methylation %>% 
+  filter(gene_id == apul_test_gene)
+print(apul_meth_raw)
+
+# Get processed values from combined dataset
+cat("\n--- Values in Combined Dataset (used for plotting) ---\n")
+apul_combined_check <- apul_combined %>% 
+  filter(gene_id == apul_test_gene)
+print(apul_combined_check)
+
+# Manual calculation to verify
+cat("\n--- Manual Verification ---\n")
+apul_expr_values <- apul_expr_raw %>% 
+  select(-gene_id) %>% 
+  unlist()
+apul_meth_values <- apul_meth_raw %>% 
+  select(-gene_id) %>% 
+  unlist()
+
+cat("Manual mean expression:", mean(apul_expr_values, na.rm = TRUE), "\n")
+cat("Manual log10(mean + 1):", log10(mean(apul_expr_values, na.rm = TRUE) + 1), "\n")
+cat("Combined dataset log_expression:", apul_combined_check$log_expression, "\n\n")
+
+cat("Manual mean methylation:", mean(apul_meth_values, na.rm = TRUE), "\n")
+cat("Combined dataset mean_methylation:", apul_combined_check$mean_methylation, "\n")
+
+cat("\n✓ Values match: Expression =", 
+    round(log10(mean(apul_expr_values, na.rm = TRUE) + 1), 6) == round(apul_combined_check$log_expression, 6),
+    ", Methylation =",
+    round(mean(apul_meth_values, na.rm = TRUE), 6) == round(apul_combined_check$mean_methylation, 6), "\n")
+```
+
+### Porites evermanni - Validation
+
+```{r validate-peve}
+# Pick a random gene from the combined dataset
+set.seed(42)
+peve_test_gene <- sample(peve_combined$gene_id, 1)
+
+cat("=== VALIDATION FOR PORITES EVERMANNI ===\n")
+cat("Test gene ID:", peve_test_gene, "\n\n")
+
+# Get raw expression data for this gene
+cat("--- Raw Expression Data ---\n")
+peve_expr_raw <- peve_expression %>% 
+  filter(gene_id == peve_test_gene)
+print(peve_expr_raw)
+
+# Get raw methylation data for this gene
+cat("\n--- Raw Methylation Data ---\n")
+peve_meth_raw <- peve_methylation %>% 
+  filter(gene_id == peve_test_gene)
+print(peve_meth_raw)
+
+# Get processed values from combined dataset
+cat("\n--- Values in Combined Dataset (used for plotting) ---\n")
+peve_combined_check <- peve_combined %>% 
+  filter(gene_id == peve_test_gene)
+print(peve_combined_check)
+
+# Manual calculation to verify
+cat("\n--- Manual Verification ---\n")
+peve_expr_values <- peve_expr_raw %>% 
+  select(-gene_id) %>% 
+  unlist()
+peve_meth_values <- peve_meth_raw %>% 
+  select(-gene_id) %>% 
+  unlist()
+
+cat("Manual mean expression:", mean(peve_expr_values, na.rm = TRUE), "\n")
+cat("Manual log10(mean + 1):", log10(mean(peve_expr_values, na.rm = TRUE) + 1), "\n")
+cat("Combined dataset log_expression:", peve_combined_check$log_expression, "\n\n")
+
+cat("Manual mean methylation:", mean(peve_meth_values, na.rm = TRUE), "\n")
+cat("Combined dataset mean_methylation:", peve_combined_check$mean_methylation, "\n")
+
+cat("\n✓ Values match: Expression =", 
+    round(log10(mean(peve_expr_values, na.rm = TRUE) + 1), 6) == round(peve_combined_check$log_expression, 6),
+    ", Methylation =",
+    round(mean(peve_meth_values, na.rm = TRUE), 6) == round(peve_combined_check$mean_methylation, 6), "\n")
+```
+
+### Pocillopora tuahiniensis - Validation
+
+```{r validate-ptua}
+# Pick a random gene from the combined dataset
+set.seed(42)
+ptua_test_gene <- sample(ptua_combined$gene_id, 1)
+
+cat("=== VALIDATION FOR POCILLOPORA TUAHINIENSIS ===\n")
+cat("Test gene ID:", ptua_test_gene, "\n\n")
+
+# Get raw expression data for this gene
+cat("--- Raw Expression Data ---\n")
+ptua_expr_raw <- ptua_expression %>% 
+  filter(gene_id == ptua_test_gene)
+print(ptua_expr_raw)
+
+# Get raw methylation data for this gene
+cat("\n--- Raw Methylation Data ---\n")
+ptua_meth_raw <- ptua_methylation %>% 
+  filter(gene_id == ptua_test_gene)
+print(ptua_meth_raw)
+
+# Get processed values from combined dataset
+cat("\n--- Values in Combined Dataset (used for plotting) ---\n")
+ptua_combined_check <- ptua_combined %>% 
+  filter(gene_id == ptua_test_gene)
+print(ptua_combined_check)
+
+# Manual calculation to verify
+cat("\n--- Manual Verification ---\n")
+ptua_expr_values <- ptua_expr_raw %>% 
+  select(-gene_id) %>% 
+  unlist()
+ptua_meth_values <- ptua_meth_raw %>% 
+  select(-gene_id) %>% 
+  unlist()
+
+cat("Manual mean expression:", mean(ptua_expr_values, na.rm = TRUE), "\n")
+cat("Manual log10(mean + 1):", log10(mean(ptua_expr_values, na.rm = TRUE) + 1), "\n")
+cat("Combined dataset log_expression:", ptua_combined_check$log_expression, "\n\n")
+
+cat("Manual mean methylation:", mean(ptua_meth_values, na.rm = TRUE), "\n")
+cat("Combined dataset mean_methylation:", ptua_combined_check$mean_methylation, "\n")
+
+cat("\n✓ Values match: Expression =", 
+    round(log10(mean(ptua_expr_values, na.rm = TRUE) + 1), 6) == round(ptua_combined_check$log_expression, 6),
+    ", Methylation =",
+    round(mean(ptua_meth_values, na.rm = TRUE), 6) == round(ptua_combined_check$mean_methylation, 6), "\n")
+```
+
+### Sample-Level Verification
+
+This demonstrates that the same sample IDs exist in both expression and methylation datasets.
+
+```{r validate-samples}
+cat("=== SAMPLE ID VERIFICATION ===\n\n")
+
+# Acropora pulchra
+apul_expr_samples <- colnames(apul_expression)[-1]
+apul_meth_samples <- colnames(apul_methylation)[-1]
+cat("--- Acropora pulchra ---\n")
+cat("Expression samples:", length(apul_expr_samples), "\n")
+cat("Methylation samples:", length(apul_meth_samples), "\n")
+cat("Shared samples:", length(intersect(apul_expr_samples, apul_meth_samples)), "\n")
+cat("Expression-only samples:", length(setdiff(apul_expr_samples, apul_meth_samples)), "\n")
+cat("Methylation-only samples:", length(setdiff(apul_meth_samples, apul_expr_samples)), "\n\n")
+
+# Porites evermanni
+peve_expr_samples <- colnames(peve_expression)[-1]
+peve_meth_samples <- colnames(peve_methylation)[-1]
+cat("--- Porites evermanni ---\n")
+cat("Expression samples:", length(peve_expr_samples), "\n")
+cat("Methylation samples:", length(peve_meth_samples), "\n")
+cat("Shared samples:", length(intersect(peve_expr_samples, peve_meth_samples)), "\n")
+cat("Expression-only samples:", length(setdiff(peve_expr_samples, peve_meth_samples)), "\n")
+cat("Methylation-only samples:", length(setdiff(peve_meth_samples, peve_expr_samples)), "\n\n")
+
+# Pocillopora tuahiniensis
+ptua_expr_samples <- colnames(ptua_expression)[-1]
+ptua_meth_samples <- colnames(ptua_methylation)[-1]
+cat("--- Pocillopora tuahiniensis ---\n")
+cat("Expression samples:", length(ptua_expr_samples), "\n")
+cat("Methylation samples:", length(ptua_meth_samples), "\n")
+cat("Shared samples:", length(intersect(ptua_expr_samples, ptua_meth_samples)), "\n")
+cat("Expression-only samples:", length(setdiff(ptua_expr_samples, ptua_meth_samples)), "\n")
+cat("Methylation-only samples:", length(setdiff(ptua_meth_samples, ptua_expr_samples)), "\n")
+```
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```
