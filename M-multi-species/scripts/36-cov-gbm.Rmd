@@ -1,0 +1,412 @@
+---
+title: "Coefficient of Variation vs Gene Body Methylation"
+author: "Steven Roberts"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Overview
+
+This script calculates the coefficient of variation (CV) of gene expression across samples for each gene and examines the relationship between CV and gene body methylation for three coral species:
+
+- *Acropora pulchra*
+- *Porites evermanni*
+- *Pocillopora tuahiniensis*
+
+Biomineralization genes are highlighted in each plot.
+
+**Coefficient of Variation (CV)** is calculated as: CV = (SD / Mean) × 100
+
+This metric captures expression variability relative to mean expression level.
+
+## Load Libraries
+
+```{r load-libraries}
+library(tidyverse)
+library(patchwork)
+```
+
+## Load Data
+
+### Gene Expression Count Matrices
+
+```{r load-expression-data}
+# Acropora pulchra
+apul_expression <- read_csv("https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/D-Apul/output/02.20-D-Apul-RNAseq-alignment-HiSat2/apul-gene_count_matrix.csv")
+
+# Porites evermanni
+peve_expression <- read_csv("https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/E-Peve/output/02.20-E-Peve-RNAseq-alignment-HiSat2/peve-gene_count_matrix.csv")
+
+# Pocillopora tuahiniensis
+ptua_expression <- read_csv("https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/F-Ptua/output/02.20-F-Ptua-RNAseq-alignment-HiSat2/ptua-gene_count_matrix.csv")
+```
+
+### Gene Body Methylation Data
+
+```{r load-methylation-data}
+# Acropora pulchra
+apul_methylation <- read_tsv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/D-Apul/output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv")
+
+# Porites evermanni
+peve_methylation <- read_tsv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/E-Peve/output/15-Peve-Gene-Methylation/Peve-gene-methylation_75pct.tsv")
+
+# Pocillopora tuahiniensis
+ptua_methylation <- read_tsv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/F-Ptua/output/09-Ptua-Gene-Methylation/Ptua-gene-methylation_75pct.tsv")
+```
+
+### Biomineralization Gene Lists
+
+```{r load-biomin-genes}
+# Acropora pulchra
+apul_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/apul_biomin_counts.csv")
+
+# Porites evermanni
+peve_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/peve_biomin_counts.csv")
+
+# Pocillopora tuahiniensis
+ptua_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/ptua_biomin_counts.csv")
+```
+
+## Calculate Coefficient of Variation
+
+### Function to Calculate CV
+
+```{r cv-function}
+# CV = (standard deviation / mean) * 100
+calculate_cv <- function(x) {
+  mean_val <- mean(x, na.rm = TRUE)
+  sd_val <- sd(x, na.rm = TRUE)
+  if (mean_val == 0) {
+    return(NA)
+  }
+  return((sd_val / mean_val) * 100)
+}
+```
+
+### Acropora pulchra
+
+```{r prepare-apul-data}
+# Calculate CV and mean expression across samples for each gene
+apul_expression_stats <- apul_expression %>%
+  pivot_longer(-gene_id, names_to = "sample", values_to = "count") %>%
+  group_by(gene_id) %>%
+  summarize(
+    mean_expression = mean(count, na.rm = TRUE),
+    sd_expression = sd(count, na.rm = TRUE),
+    cv_expression = calculate_cv(count)
+  ) %>%
+  filter(!is.na(cv_expression), cv_expression < Inf)  # Remove genes with zero mean
+
+# Calculate mean methylation across samples for each gene
+apul_methylation_mean <- apul_methylation %>%
+  pivot_longer(-gene_id, names_to = "sample", values_to = "methylation") %>%
+  group_by(gene_id) %>%
+  summarize(mean_methylation = mean(methylation, na.rm = TRUE))
+
+# Join expression and methylation data
+apul_combined <- apul_expression_stats %>%
+  inner_join(apul_methylation_mean, by = "gene_id")
+
+# Get biomin gene IDs
+apul_biomin_genes <- apul_biomin %>%
+  pull(gene_id) %>%
+  unique()
+
+# Add biomin indicator
+apul_combined <- apul_combined %>%
+  mutate(is_biomin = gene_id %in% apul_biomin_genes)
+
+cat("Acropora pulchra:\n")
+cat("  Total genes with CV and methylation:", nrow(apul_combined), "\n")
+cat("  Biomineralization genes:", sum(apul_combined$is_biomin), "\n")
+```
+
+### Porites evermanni
+
+```{r prepare-peve-data}
+# Calculate CV and mean expression across samples for each gene
+peve_expression_stats <- peve_expression %>%
+  pivot_longer(-gene_id, names_to = "sample", values_to = "count") %>%
+  group_by(gene_id) %>%
+  summarize(
+    mean_expression = mean(count, na.rm = TRUE),
+    sd_expression = sd(count, na.rm = TRUE),
+    cv_expression = calculate_cv(count)
+  ) %>%
+  filter(!is.na(cv_expression), cv_expression < Inf)
+
+# Calculate mean methylation across samples for each gene
+peve_methylation_mean <- peve_methylation %>%
+  pivot_longer(-gene_id, names_to = "sample", values_to = "methylation") %>%
+  group_by(gene_id) %>%
+  summarize(mean_methylation = mean(methylation, na.rm = TRUE))
+
+# Join expression and methylation data
+peve_combined <- peve_expression_stats %>%
+  inner_join(peve_methylation_mean, by = "gene_id")
+
+# Get biomin gene IDs - add "gene-" prefix to match expression data format
+peve_biomin_genes <- peve_biomin %>%
+  pull(gene_id) %>%
+  unique() %>%
+  paste0("gene-", .)
+
+# Add biomin indicator
+peve_combined <- peve_combined %>%
+  mutate(is_biomin = gene_id %in% peve_biomin_genes)
+
+cat("Porites evermanni:\n")
+cat("  Total genes with CV and methylation:", nrow(peve_combined), "\n")
+cat("  Biomineralization genes:", sum(peve_combined$is_biomin), "\n")
+```
+
+### Pocillopora tuahiniensis
+
+```{r prepare-ptua-data}
+# Calculate CV and mean expression across samples for each gene
+ptua_expression_stats <- ptua_expression %>%
+  pivot_longer(-gene_id, names_to = "sample", values_to = "count") %>%
+  group_by(gene_id) %>%
+  summarize(
+    mean_expression = mean(count, na.rm = TRUE),
+    sd_expression = sd(count, na.rm = TRUE),
+    cv_expression = calculate_cv(count)
+  ) %>%
+  filter(!is.na(cv_expression), cv_expression < Inf)
+
+# Calculate mean methylation across samples for each gene
+ptua_methylation_mean <- ptua_methylation %>%
+  pivot_longer(-gene_id, names_to = "sample", values_to = "methylation") %>%
+  group_by(gene_id) %>%
+  summarize(mean_methylation = mean(methylation, na.rm = TRUE))
+
+# Join expression and methylation data
+ptua_combined <- ptua_expression_stats %>%
+  inner_join(ptua_methylation_mean, by = "gene_id")
+
+# Get biomin gene IDs - add "gene-" prefix to match expression data format
+ptua_biomin_genes <- ptua_biomin %>%
+  pull(gene_id) %>%
+  unique() %>%
+  paste0("gene-", .)
+
+# Add biomin indicator
+ptua_combined <- ptua_combined %>%
+  mutate(is_biomin = gene_id %in% ptua_biomin_genes)
+
+cat("Pocillopora tuahiniensis:\n")
+cat("  Total genes with CV and methylation:", nrow(ptua_combined), "\n")
+cat("  Biomineralization genes:", sum(ptua_combined$is_biomin), "\n")
+```
+
+## Create Plots
+
+### Acropora pulchra
+
+```{r plot-apul, fig.width=10, fig.height=8}
+ggplot(apul_combined, aes(x = mean_methylation, y = cv_expression, color = is_biomin)) +
+  geom_point(data = filter(apul_combined, !is_biomin), alpha = 0.3, size = 1) +
+  geom_point(data = filter(apul_combined, is_biomin), alpha = 0.8, size = 2.5) +
+  scale_color_manual(values = c("FALSE" = "gray70", "TRUE" = "darkred"),
+                     labels = c("FALSE" = "Other genes", "TRUE" = "Biomineralization genes"),
+                     name = "Gene Type") +
+  labs(title = "Coefficient of Variation vs Gene Body Methylation - Acropora pulchra",
+       x = "Gene Body Methylation (%)",
+       y = "Coefficient of Variation (%)") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        plot.title = element_text(face = "italic", hjust = 0.5))
+```
+
+### Porites evermanni
+
+```{r plot-peve, fig.width=10, fig.height=8}
+ggplot(peve_combined, aes(x = mean_methylation, y = cv_expression, color = is_biomin)) +
+  geom_point(data = filter(peve_combined, !is_biomin), alpha = 0.3, size = 1) +
+  geom_point(data = filter(peve_combined, is_biomin), alpha = 0.8, size = 2.5) +
+  scale_color_manual(values = c("FALSE" = "gray70", "TRUE" = "darkblue"),
+                     labels = c("FALSE" = "Other genes", "TRUE" = "Biomineralization genes"),
+                     name = "Gene Type") +
+  labs(title = "Coefficient of Variation vs Gene Body Methylation - Porites evermanni",
+       x = "Gene Body Methylation (%)",
+       y = "Coefficient of Variation (%)") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        plot.title = element_text(face = "italic", hjust = 0.5))
+```
+
+### Pocillopora tuahiniensis
+
+```{r plot-ptua, fig.width=10, fig.height=8}
+ggplot(ptua_combined, aes(x = mean_methylation, y = cv_expression, color = is_biomin)) +
+  geom_point(data = filter(ptua_combined, !is_biomin), alpha = 0.3, size = 1) +
+  geom_point(data = filter(ptua_combined, is_biomin), alpha = 0.8, size = 2.5) +
+  scale_color_manual(values = c("FALSE" = "gray70", "TRUE" = "darkgreen"),
+                     labels = c("FALSE" = "Other genes", "TRUE" = "Biomineralization genes"),
+                     name = "Gene Type") +
+  labs(title = "Coefficient of Variation vs Gene Body Methylation - Pocillopora tuahiniensis",
+       x = "Gene Body Methylation (%)",
+       y = "Coefficient of Variation (%)") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        plot.title = element_text(face = "italic", hjust = 0.5))
+```
+
+## Combined Panel Plot
+
+```{r combined-plot, fig.width=14, fig.height=5}
+# Add species identifier to each dataset
+apul_combined <- apul_combined %>% mutate(species = "Acropora pulchra")
+peve_combined <- peve_combined %>% mutate(species = "Porites evermanni")
+ptua_combined <- ptua_combined %>% mutate(species = "Pocillopora tuahiniensis")
+
+# Combine all data
+all_combined <- bind_rows(apul_combined, peve_combined, ptua_combined)
+
+# Create faceted plot
+ggplot(all_combined, aes(x = mean_methylation, y = cv_expression, color = is_biomin)) +
+  geom_point(data = filter(all_combined, !is_biomin), alpha = 0.3, size = 1) +
+  geom_point(data = filter(all_combined, is_biomin), alpha = 0.8, size = 2.5) +
+  scale_color_manual(values = c("FALSE" = "gray70", "TRUE" = "darkred"),
+                     labels = c("FALSE" = "Other genes", "TRUE" = "Biomineralization genes"),
+                     name = "Gene Type") +
+  facet_wrap(~species, scales = "free") +
+  labs(title = "Coefficient of Variation vs Gene Body Methylation",
+       x = "Gene Body Methylation (%)",
+       y = "Coefficient of Variation (%)") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "italic", size = 12))
+```
+
+## Summary Statistics
+
+```{r summary-stats}
+# Summary for each species
+summary_stats <- all_combined %>%
+  group_by(species, is_biomin) %>%
+  summarize(
+    n_genes = n(),
+    mean_cv = mean(cv_expression, na.rm = TRUE),
+    median_cv = median(cv_expression, na.rm = TRUE),
+    sd_cv = sd(cv_expression, na.rm = TRUE),
+    mean_methylation = mean(mean_methylation, na.rm = TRUE),
+    sd_methylation = sd(mean_methylation, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+summary_stats %>%
+  knitr::kable(digits = 2, 
+               col.names = c("Species", "Biomin Gene", "N", "Mean CV", "Median CV", "SD CV", "Mean Meth", "SD Meth"))
+```
+
+## Correlation Analysis
+
+```{r correlation-analysis}
+cat("=== CORRELATION: CV vs GENE BODY METHYLATION ===\n\n")
+
+# Acropora pulchra
+cat("--- Acropora pulchra ---\n")
+cor_apul <- cor.test(apul_combined$cv_expression, apul_combined$mean_methylation, 
+                     method = "spearman", use = "complete.obs")
+cat("  Spearman rho =", round(cor_apul$estimate, 3), ", p =", format(cor_apul$p.value, digits = 3), "\n")
+
+cat("  Biomin genes only:\n")
+apul_biomin_only <- filter(apul_combined, is_biomin)
+if(nrow(apul_biomin_only) > 3) {
+  cor_apul_biomin <- cor.test(apul_biomin_only$cv_expression, apul_biomin_only$mean_methylation, 
+                               method = "spearman", use = "complete.obs")
+  cat("    Spearman rho =", round(cor_apul_biomin$estimate, 3), ", p =", format(cor_apul_biomin$p.value, digits = 3), "\n\n")
+} else {
+  cat("    Not enough biomin genes for correlation\n\n")
+}
+
+# Porites evermanni
+cat("--- Porites evermanni ---\n")
+cor_peve <- cor.test(peve_combined$cv_expression, peve_combined$mean_methylation, 
+                     method = "spearman", use = "complete.obs")
+cat("  Spearman rho =", round(cor_peve$estimate, 3), ", p =", format(cor_peve$p.value, digits = 3), "\n")
+
+cat("  Biomin genes only:\n")
+peve_biomin_only <- filter(peve_combined, is_biomin)
+if(nrow(peve_biomin_only) > 3) {
+  cor_peve_biomin <- cor.test(peve_biomin_only$cv_expression, peve_biomin_only$mean_methylation, 
+                               method = "spearman", use = "complete.obs")
+  cat("    Spearman rho =", round(cor_peve_biomin$estimate, 3), ", p =", format(cor_peve_biomin$p.value, digits = 3), "\n\n")
+} else {
+  cat("    Not enough biomin genes for correlation\n\n")
+}
+
+# Pocillopora tuahiniensis
+cat("--- Pocillopora tuahiniensis ---\n")
+cor_ptua <- cor.test(ptua_combined$cv_expression, ptua_combined$mean_methylation, 
+                     method = "spearman", use = "complete.obs")
+cat("  Spearman rho =", round(cor_ptua$estimate, 3), ", p =", format(cor_ptua$p.value, digits = 3), "\n")
+
+cat("  Biomin genes only:\n")
+ptua_biomin_only <- filter(ptua_combined, is_biomin)
+if(nrow(ptua_biomin_only) > 3) {
+  cor_ptua_biomin <- cor.test(ptua_biomin_only$cv_expression, ptua_biomin_only$mean_methylation, 
+                               method = "spearman", use = "complete.obs")
+  cat("    Spearman rho =", round(cor_ptua_biomin$estimate, 3), ", p =", format(cor_ptua_biomin$p.value, digits = 3), "\n")
+} else {
+  cat("    Not enough biomin genes for correlation\n")
+}
+```
+
+## CV Distribution Comparison
+
+```{r cv-distribution, fig.width=12, fig.height=8}
+# Boxplot comparing CV distribution between biomin and other genes
+ggplot(all_combined, aes(x = is_biomin, y = cv_expression, fill = is_biomin)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.3) +
+  scale_fill_manual(values = c("FALSE" = "gray70", "TRUE" = "darkred"),
+                    labels = c("FALSE" = "Other genes", "TRUE" = "Biomineralization genes"),
+                    name = "Gene Type") +
+  scale_x_discrete(labels = c("FALSE" = "Other genes", "TRUE" = "Biomin genes")) +
+  facet_wrap(~species, scales = "free_y") +
+  labs(title = "Distribution of Coefficient of Variation by Gene Type",
+       x = "",
+       y = "Coefficient of Variation (%)") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "italic", size = 12))
+```
+
+## Statistical Tests: CV Comparison
+
+```{r cv-comparison-tests}
+cat("=== WILCOXON TEST: CV of Biomin vs Other Genes ===\n\n")
+
+# Acropora pulchra
+cat("--- Acropora pulchra ---\n")
+apul_test <- wilcox.test(cv_expression ~ is_biomin, data = apul_combined)
+cat("  W =", apul_test$statistic, ", p =", format(apul_test$p.value, digits = 3), "\n")
+cat("  Median CV (Other):", round(median(filter(apul_combined, !is_biomin)$cv_expression, na.rm = TRUE), 2), "\n")
+cat("  Median CV (Biomin):", round(median(filter(apul_combined, is_biomin)$cv_expression, na.rm = TRUE), 2), "\n\n")
+
+# Porites evermanni
+cat("--- Porites evermanni ---\n")
+peve_test <- wilcox.test(cv_expression ~ is_biomin, data = peve_combined)
+cat("  W =", peve_test$statistic, ", p =", format(peve_test$p.value, digits = 3), "\n")
+cat("  Median CV (Other):", round(median(filter(peve_combined, !is_biomin)$cv_expression, na.rm = TRUE), 2), "\n")
+cat("  Median CV (Biomin):", round(median(filter(peve_combined, is_biomin)$cv_expression, na.rm = TRUE), 2), "\n\n")
+
+# Pocillopora tuahiniensis
+cat("--- Pocillopora tuahiniensis ---\n")
+ptua_test <- wilcox.test(cv_expression ~ is_biomin, data = ptua_combined)
+cat("  W =", ptua_test$statistic, ", p =", format(ptua_test$p.value, digits = 3), "\n")
+cat("  Median CV (Other):", round(median(filter(ptua_combined, !is_biomin)$cv_expression, na.rm = TRUE), 2), "\n")
+cat("  Median CV (Biomin):", round(median(filter(ptua_combined, is_biomin)$cv_expression, na.rm = TRUE), 2), "\n")
+```
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```
+
