@@ -404,6 +404,249 @@ cat("  Median CV (Other):", round(median(filter(ptua_combined, !is_biomin)$cv_ex
 cat("  Median CV (Biomin):", round(median(filter(ptua_combined, is_biomin)$cv_expression, na.rm = TRUE), 2), "\n")
 ```
 
+## CV vs Log10 Expression by Methylation Status
+
+This section examines the relationship between coefficient of variation (CV) and log10-transformed mean expression, categorizing genes by their methylation status:
+
+- **Methylated**: Gene body methylation > 60%
+- **Unmethylated**: Gene body methylation < 1%
+- **Intermediate**: Gene body methylation between 1% and 60%
+
+### Categorize Genes by Methylation Status
+
+```{r categorize-methylation}
+# Add methylation category and log expression to combined data
+all_combined <- all_combined %>%
+  mutate(
+    log_expression = log10(mean_expression + 1),
+    methylation_status = case_when(
+      mean_methylation > 60 ~ "Methylated (>60%)",
+      mean_methylation < 1 ~ "Unmethylated (<1%)",
+      TRUE ~ "Intermediate (1-60%)"
+    ),
+    methylation_status = factor(methylation_status, 
+                                levels = c("Unmethylated (<1%)", 
+                                          "Intermediate (1-60%)", 
+                                          "Methylated (>60%)"))
+  )
+
+# Summary of methylation categories by species
+cat("=== GENE COUNTS BY METHYLATION STATUS ===\n\n")
+all_combined %>%
+  count(species, methylation_status) %>%
+  pivot_wider(names_from = methylation_status, values_from = n) %>%
+  knitr::kable()
+```
+
+### CV vs Log10 Expression - All Species Combined
+
+```{r cv-vs-expression-combined, fig.width=12, fig.height=8}
+ggplot() +
+  # Plot intermediate genes first (background)
+  geom_point(data = filter(all_combined, methylation_status == "Intermediate (1-60%)"),
+             aes(x = log_expression, y = cv_expression, color = methylation_status),
+             alpha = 0.3, size = 1) +
+  # Plot unmethylated genes
+  geom_point(data = filter(all_combined, methylation_status == "Unmethylated (<1%)"),
+             aes(x = log_expression, y = cv_expression, color = methylation_status),
+             alpha = 0.6, size = 1.5) +
+  # Plot methylated genes on top
+  geom_point(data = filter(all_combined, methylation_status == "Methylated (>60%)"),
+             aes(x = log_expression, y = cv_expression, color = methylation_status),
+             alpha = 0.8, size = 1.5) +
+  scale_color_manual(values = c("Unmethylated (<1%)" = "#E41A1C",
+                                "Intermediate (1-60%)" = "gray60",
+                                "Methylated (>60%)" = "#377EB8"),
+                     name = "Methylation Status") +
+  labs(title = "Coefficient of Variation vs Log10 Expression by Methylation Status",
+       x = "Log10(Mean Expression + 1)",
+       y = "Coefficient of Variation (%)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+### CV vs Log10 Expression - Faceted by Species
+
+```{r cv-vs-expression-faceted, fig.width=14, fig.height=5}
+ggplot() +
+  # Plot intermediate genes first (background)
+  geom_point(data = filter(all_combined, methylation_status == "Intermediate (1-60%)"),
+             aes(x = log_expression, y = cv_expression, color = methylation_status),
+             alpha = 0.3, size = 1) +
+  # Plot unmethylated genes
+  geom_point(data = filter(all_combined, methylation_status == "Unmethylated (<1%)"),
+             aes(x = log_expression, y = cv_expression, color = methylation_status),
+             alpha = 0.6, size = 1.5) +
+  # Plot methylated genes on top
+  geom_point(data = filter(all_combined, methylation_status == "Methylated (>60%)"),
+             aes(x = log_expression, y = cv_expression, color = methylation_status),
+             alpha = 0.8, size = 1.5) +
+  scale_color_manual(values = c("Unmethylated (<1%)" = "#E41A1C",
+                                "Intermediate (1-60%)" = "gray60",
+                                "Methylated (>60%)" = "#377EB8"),
+                     name = "Methylation Status") +
+  facet_wrap(~species, scales = "free") +
+  labs(title = "Coefficient of Variation vs Log10 Expression by Methylation Status",
+       x = "Log10(Mean Expression + 1)",
+       y = "Coefficient of Variation (%)") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "italic", size = 12))
+```
+
+### CV vs Log10 Expression - Highlighting Methylated and Unmethylated Only
+
+```{r cv-vs-expression-highlight, fig.width=14, fig.height=5}
+ggplot() +
+  # Plot intermediate genes as background
+  geom_point(data = filter(all_combined, methylation_status == "Intermediate (1-60%)"),
+             aes(x = log_expression, y = cv_expression),
+             color = "gray85", alpha = 0.3, size = 0.5) +
+  # Plot unmethylated genes
+  geom_point(data = filter(all_combined, methylation_status == "Unmethylated (<1%)"),
+             aes(x = log_expression, y = cv_expression, color = methylation_status),
+             alpha = 0.6, size = 1.5) +
+  # Plot methylated genes on top
+  geom_point(data = filter(all_combined, methylation_status == "Methylated (>60%)"),
+             aes(x = log_expression, y = cv_expression, color = methylation_status),
+             alpha = 0.8, size = 2) +
+  scale_color_manual(values = c("Unmethylated (<1%)" = "#E41A1C",
+                                "Methylated (>60%)" = "#377EB8"),
+                     name = "Methylation Status") +
+  facet_wrap(~species, scales = "free") +
+  labs(title = "CV vs Log10 Expression: Methylated vs Unmethylated Genes",
+       subtitle = "Intermediate methylation genes shown in light gray background",
+       x = "Log10(Mean Expression + 1)",
+       y = "Coefficient of Variation (%)") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "italic", size = 12))
+```
+
+### Expression Distribution: Methylated vs Unmethylated Genes
+
+```{r expression-histogram, fig.width=14, fig.height=10}
+# Filter to only methylated and unmethylated genes
+meth_unmeth_only <- all_combined %>%
+  filter(methylation_status %in% c("Methylated (>60%)", "Unmethylated (<1%)"))
+
+# Histogram - All species combined
+p_combined <- ggplot(meth_unmeth_only, aes(x = log_expression, fill = methylation_status)) +
+  geom_histogram(alpha = 0.6, position = "identity", bins = 50) +
+  scale_fill_manual(values = c("Unmethylated (<1%)" = "#E41A1C",
+                               "Methylated (>60%)" = "#377EB8"),
+                    name = "Methylation Status") +
+  labs(title = "Distribution of Gene Expression: Methylated vs Unmethylated Genes",
+       x = "Log10(Mean Expression + 1)",
+       y = "Frequency (Number of Genes)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Histogram - Faceted by species
+p_faceted <- ggplot(meth_unmeth_only, aes(x = log_expression, fill = methylation_status)) +
+  geom_histogram(alpha = 0.6, position = "identity", bins = 40) +
+  scale_fill_manual(values = c("Unmethylated (<1%)" = "#E41A1C",
+                               "Methylated (>60%)" = "#377EB8"),
+                    name = "Methylation Status") +
+  facet_wrap(~species, scales = "free_y", ncol = 1) +
+  labs(title = "Distribution of Gene Expression by Species",
+       x = "Log10(Mean Expression + 1)",
+       y = "Frequency (Number of Genes)") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "italic", size = 12))
+
+p_combined
+```
+
+```{r expression-histogram-faceted, fig.width=12, fig.height=10}
+p_faceted
+```
+
+### Expression Distribution - Density Plot
+
+```{r expression-density, fig.width=14, fig.height=5}
+ggplot(meth_unmeth_only, aes(x = log_expression, fill = methylation_status, color = methylation_status)) +
+  geom_density(alpha = 0.4) +
+  scale_fill_manual(values = c("Unmethylated (<1%)" = "#E41A1C",
+                               "Methylated (>60%)" = "#377EB8"),
+                    name = "Methylation Status") +
+  scale_color_manual(values = c("Unmethylated (<1%)" = "#E41A1C",
+                                "Methylated (>60%)" = "#377EB8"),
+                     name = "Methylation Status") +
+  facet_wrap(~species, scales = "free_y") +
+  labs(title = "Density Distribution of Gene Expression: Methylated vs Unmethylated",
+       x = "Log10(Mean Expression + 1)",
+       y = "Density") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "italic", size = 12))
+```
+
+### Summary Statistics by Methylation Status
+
+```{r methylation-status-stats}
+methylation_summary <- all_combined %>%
+  group_by(species, methylation_status) %>%
+  summarize(
+    n_genes = n(),
+    mean_cv = mean(cv_expression, na.rm = TRUE),
+    median_cv = median(cv_expression, na.rm = TRUE),
+    mean_log_expr = mean(log_expression, na.rm = TRUE),
+    median_log_expr = median(log_expression, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+methylation_summary %>%
+  knitr::kable(digits = 2,
+               col.names = c("Species", "Methylation Status", "N", "Mean CV", "Median CV", 
+                            "Mean Log Expr", "Median Log Expr"))
+```
+
+### Statistical Tests: CV by Methylation Status
+
+```{r methylation-cv-tests}
+cat("=== KRUSKAL-WALLIS TEST: CV across Methylation Status ===\n\n")
+
+for(sp in unique(all_combined$species)) {
+  cat("---", sp, "---\n")
+  sp_data <- filter(all_combined, species == sp)
+  kw_test <- kruskal.test(cv_expression ~ methylation_status, data = sp_data)
+  cat("  Kruskal-Wallis chi-squared =", round(kw_test$statistic, 2), 
+      ", df =", kw_test$parameter, ", p =", format(kw_test$p.value, digits = 3), "\n")
+  
+  # Pairwise Wilcoxon tests
+  cat("  Pairwise Wilcoxon tests:\n")
+  pw_test <- pairwise.wilcox.test(sp_data$cv_expression, sp_data$methylation_status, 
+                                   p.adjust.method = "bonferroni")
+  print(pw_test$p.value)
+  cat("\n")
+}
+```
+
+### Correlation: CV vs Expression by Methylation Status
+
+```{r cv-expr-correlation-by-meth}
+cat("=== SPEARMAN CORRELATION: CV vs Log10 Expression by Methylation Status ===\n\n")
+
+for(sp in unique(all_combined$species)) {
+  cat("---", sp, "---\n")
+  for(meth_status in levels(all_combined$methylation_status)) {
+    subset_data <- filter(all_combined, species == sp, methylation_status == meth_status)
+    if(nrow(subset_data) > 10) {
+      cor_test <- cor.test(subset_data$cv_expression, subset_data$log_expression, 
+                          method = "spearman", use = "complete.obs")
+      cat("  ", meth_status, ": rho =", round(cor_test$estimate, 3), 
+          ", p =", format(cor_test$p.value, digits = 3), 
+          " (n =", nrow(subset_data), ")\n")
+    } else {
+      cat("  ", meth_status, ": Not enough genes (n =", nrow(subset_data), ")\n")
+    }
+  }
+  cat("\n")
+}
+```
+
 ## Session Info
 
 ```{r session-info}

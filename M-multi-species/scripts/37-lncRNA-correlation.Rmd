@@ -1,0 +1,516 @@
+---
+title: "37-lncRNA-correlation"
+output: html_document
+date: "2025-12-03"
+---
+
+# lncRNA-Gene Expression Correlation Analysis
+
+This analysis identifies which long non-coding RNAs (lncRNAs) have significant correlations 
+(both positive and negative) with gene expression across three coral species:
+- Acropora pulchra
+- Porites evermanni  
+- Pocillopora tuahiniensis
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r libraries}
+library(tidyverse)
+library(corrr)
+library(pheatmap)
+library(ggplot2)
+library(scales)
+```
+
+# Load Data
+
+## Gene Expression Count Matrices
+
+```{r load-gene-expression}
+# Acropora pulchra
+apul_gene <- read_csv(
+  "https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/D-Apul/output/02.20-D-Apul-RNAseq-alignment-HiSat2/apul-gene_count_matrix.csv",
+  show_col_types = FALSE
+)
+
+# Porites evermanni
+peve_gene <- read_csv(
+  "https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/E-Peve/output/02.20-E-Peve-RNAseq-alignment-HiSat2/peve-gene_count_matrix.csv",
+  show_col_types = FALSE
+)
+
+# Pocillopora tuahiniensis
+ptua_gene <- read_csv(
+  "https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/F-Ptua/output/02.20-F-Ptua-RNAseq-alignment-HiSat2/ptua-gene_count_matrix.csv",
+  show_col_types = FALSE
+)
+
+cat("Gene expression matrices loaded:\n")
+cat("Apul genes:", nrow(apul_gene), "x", ncol(apul_gene), "\n")
+cat("Peve genes:", nrow(peve_gene), "x", ncol(peve_gene), "\n")
+cat("Ptua genes:", nrow(ptua_gene), "x", ncol(ptua_gene), "\n")
+```
+
+## lncRNA Count Matrices
+
+```{r load-lncrna}
+# Acropora pulchra lncRNA
+apul_lncrna <- read_tsv(
+  "https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/timeseries_molecular/D-Apul/output/31.5-Apul-lncRNA-discovery/lncRNA_counts.clean.filtered.txt",
+  show_col_types = FALSE
+)
+
+# Porites evermanni lncRNA
+peve_lncrna <- read_tsv(
+  "https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/timeseries_molecular/E-Peve/output/12-Peve-lncRNA-discovery/lncRNA_counts.clean.filtered.txt",
+  show_col_types = FALSE
+)
+
+# Pocillopora tuahiniensis lncRNA
+ptua_lncrna <- read_tsv(
+  "https://raw.githubusercontent.com/urol-e5/timeseries_molecular/refs/heads/main/F-Ptua/output/06-Ptua-lncRNA-discovery/lncRNA_counts.clean.filtered.txt",
+  show_col_types = FALSE
+)
+
+cat("lncRNA matrices loaded:\n")
+cat("Apul lncRNAs:", nrow(apul_lncrna), "x", ncol(apul_lncrna), "\n")
+cat("Peve lncRNAs:", nrow(peve_lncrna), "x", ncol(peve_lncrna), "\n")
+cat("Ptua lncRNAs:", nrow(ptua_lncrna), "x", ncol(ptua_lncrna), "\n")
+```
+
+## Biomineralization Gene Lists
+
+```{r load-biomin}
+# Biomin gene lists for highlighting
+apul_biomin <- read_csv(
+  "https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/apul_biomin_counts.csv",
+  show_col_types = FALSE
+)
+
+peve_biomin <- read_csv(
+  "https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/peve_biomin_counts.csv",
+  show_col_types = FALSE
+)
+
+ptua_biomin <- read_csv(
+  "https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/ptua_biomin_counts.csv",
+  show_col_types = FALSE
+)
+
+cat("Biomin genes loaded:\n")
+cat("Apul biomin genes:", nrow(apul_biomin), "\n")
+cat("Peve biomin genes:", nrow(peve_biomin), "\n")
+cat("Ptua biomin genes:", nrow(ptua_biomin), "\n")
+```
+
+# Helper Functions
+
+```{r helper-functions}
+# Function to calculate correlations between lncRNA and gene expression
+calculate_correlations <- function(gene_df, lncrna_df, gene_id_col = "gene_id", 
+                                   lncrna_id_col = NULL, min_counts = 10) {
+  
+  # Identify ID columns
+  if (is.null(lncrna_id_col)) {
+    lncrna_id_col <- names(lncrna_df)[1]
+  }
+  
+  # Get sample columns (shared between both matrices)
+  gene_samples <- setdiff(names(gene_df), gene_id_col)
+  lncrna_samples <- setdiff(names(lncrna_df), lncrna_id_col)
+  shared_samples <- intersect(gene_samples, lncrna_samples)
+  
+  cat("Shared samples between gene and lncRNA data:", length(shared_samples), "\n")
+  
+  if (length(shared_samples) < 3) {
+    warning("Not enough shared samples for correlation analysis")
+    return(NULL)
+  }
+  
+  # Filter to shared samples
+  gene_mat <- gene_df %>%
+    select(all_of(c(gene_id_col, shared_samples))) %>%
+    column_to_rownames(gene_id_col) %>%
+    as.matrix()
+  
+  lncrna_mat <- lncrna_df %>%
+    select(all_of(c(lncrna_id_col, shared_samples))) %>%
+    column_to_rownames(lncrna_id_col) %>%
+    as.matrix()
+  
+  # Filter low-expression genes and lncRNAs
+  gene_keep <- rowSums(gene_mat) >= min_counts
+  lncrna_keep <- rowSums(lncrna_mat) >= min_counts
+  
+  gene_mat <- gene_mat[gene_keep, ]
+  lncrna_mat <- lncrna_mat[lncrna_keep, ]
+  
+  cat("Genes after filtering:", nrow(gene_mat), "\n")
+  cat("lncRNAs after filtering:", nrow(lncrna_mat), "\n")
+  
+  # Log2 transform (add 1 pseudocount)
+  gene_log <- log2(gene_mat + 1)
+  lncrna_log <- log2(lncrna_mat + 1)
+  
+  # Calculate correlations
+  n_lncrna <- nrow(lncrna_log)
+  n_genes <- nrow(gene_log)
+  n_samples <- ncol(gene_log)
+  
+  cat("Calculating", n_lncrna * n_genes, "correlations...\n")
+  
+  # Pre-allocate results
+  results <- vector("list", n_lncrna)
+  
+  for (i in seq_len(n_lncrna)) {
+    lncrna_id <- rownames(lncrna_log)[i]
+    lncrna_expr <- lncrna_log[i, ]
+    
+    cors <- apply(gene_log, 1, function(gene_expr) {
+      if (sd(gene_expr) == 0 | sd(lncrna_expr) == 0) {
+        return(c(cor = NA, pval = NA))
+      }
+      test <- cor.test(lncrna_expr, gene_expr, method = "pearson")
+      c(cor = test$estimate, pval = test$p.value)
+    })
+    
+    cors_df <- as.data.frame(t(cors))
+    cors_df$gene_id <- rownames(cors_df)
+    cors_df$lncrna_id <- lncrna_id
+    results[[i]] <- cors_df
+  }
+  
+  # Combine results
+  all_cors <- bind_rows(results)
+  
+  # Adjust p-values for multiple testing
+  all_cors <- all_cors %>%
+    filter(!is.na(pval)) %>%
+    mutate(padj = p.adjust(pval, method = "BH")) %>%
+    arrange(padj)
+  
+  return(all_cors)
+}
+
+# Function to identify significant correlations
+get_significant_cors <- function(cor_df, padj_threshold = 0.05, cor_threshold = 0.5) {
+  cor_df %>%
+    filter(padj < padj_threshold & abs(cor) >= cor_threshold) %>%
+    mutate(direction = ifelse(cor > 0, "positive", "negative"))
+}
+```
+
+# Acropora pulchra Analysis
+
+```{r apul-correlation, cache=TRUE}
+# Check column names
+cat("Apul gene columns:", head(names(apul_gene)), "\n")
+cat("Apul lncRNA columns:", head(names(apul_lncrna)), "\n")
+
+# Calculate correlations
+apul_cors <- calculate_correlations(
+  apul_gene, 
+  apul_lncrna,
+  gene_id_col = names(apul_gene)[1],
+  min_counts = 10
+)
+
+# Get significant correlations
+apul_sig <- get_significant_cors(apul_cors, padj_threshold = 0.05, cor_threshold = 0.5)
+
+cat("\nSignificant lncRNA-gene correlations in A. pulchra:\n")
+cat("Total significant:", nrow(apul_sig), "\n")
+cat("Positive correlations:", sum(apul_sig$direction == "positive"), "\n")
+cat("Negative correlations:", sum(apul_sig$direction == "negative"), "\n")
+```
+
+```{r apul-biomin-highlight}
+# Mark biomin genes
+apul_sig <- apul_sig %>%
+  mutate(is_biomin = gene_id %in% apul_biomin$gene_id)
+
+cat("\nBiomin genes with significant lncRNA correlations:\n")
+apul_sig %>%
+  filter(is_biomin) %>%
+  arrange(padj) %>%
+  head(20)
+```
+
+```{r apul-plot, fig.width=10, fig.height=8}
+# Volcano-style plot
+ggplot(apul_cors %>% filter(!is.na(cor)), 
+       aes(x = cor, y = -log10(pval))) +
+  geom_point(alpha = 0.1, color = "gray70", size = 0.5) +
+  geom_point(data = apul_sig %>% filter(!is_biomin),
+             aes(color = direction), alpha = 0.5, size = 1) +
+  geom_point(data = apul_sig %>% filter(is_biomin),
+             color = "black", size = 2.5, shape = 21, fill = "gold", stroke = 0.8) +
+  scale_color_manual(values = c("positive" = "#E74C3C", "negative" = "#3498DB")) +
+  labs(title = "A. pulchra: lncRNA-Gene Expression Correlations",
+       subtitle = "Gold = biomineralization genes",
+       x = "Pearson Correlation",
+       y = "-log10(p-value)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r apul-top-lncrnas}
+# Top lncRNAs by number of significant correlations
+apul_top_lncrnas <- apul_sig %>%
+  group_by(lncrna_id) %>%
+  summarise(
+    n_positive = sum(direction == "positive"),
+    n_negative = sum(direction == "negative"),
+    n_total = n(),
+    n_biomin = sum(is_biomin),
+    mean_cor = mean(cor)
+  ) %>%
+  arrange(desc(n_total))
+
+cat("\nTop 20 lncRNAs by number of correlated genes:\n")
+head(apul_top_lncrnas, 20)
+```
+
+# Porites evermanni Analysis
+
+```{r peve-correlation, cache=TRUE}
+# Check column names
+cat("Peve gene columns:", head(names(peve_gene)), "\n")
+cat("Peve lncRNA columns:", head(names(peve_lncrna)), "\n")
+
+# Calculate correlations
+peve_cors <- calculate_correlations(
+  peve_gene, 
+  peve_lncrna,
+  gene_id_col = names(peve_gene)[1],
+  min_counts = 10
+)
+
+# Get significant correlations
+peve_sig <- get_significant_cors(peve_cors, padj_threshold = 0.05, cor_threshold = 0.5)
+
+cat("\nSignificant lncRNA-gene correlations in P. evermanni:\n")
+cat("Total significant:", nrow(peve_sig), "\n")
+cat("Positive correlations:", sum(peve_sig$direction == "positive"), "\n")
+cat("Negative correlations:", sum(peve_sig$direction == "negative"), "\n")
+```
+
+```{r peve-biomin-highlight}
+# Clean gene IDs for matching
+peve_sig <- peve_sig %>%
+  mutate(gene_id_clean = str_replace(gene_id, "^gene-", "")) %>%
+  mutate(is_biomin = gene_id_clean %in% peve_biomin$gene_id | gene_id %in% peve_biomin$gene_id)
+
+cat("\nBiomin genes with significant lncRNA correlations:\n")
+peve_sig %>%
+  filter(is_biomin) %>%
+  arrange(padj) %>%
+  head(20)
+```
+
+```{r peve-plot, fig.width=10, fig.height=8}
+# Volcano-style plot
+ggplot(peve_cors %>% filter(!is.na(cor)), 
+       aes(x = cor, y = -log10(pval))) +
+  geom_point(alpha = 0.1, color = "gray70", size = 0.5) +
+  geom_point(data = peve_sig %>% filter(!is_biomin),
+             aes(color = direction), alpha = 0.5, size = 1) +
+  geom_point(data = peve_sig %>% filter(is_biomin),
+             color = "black", size = 2.5, shape = 21, fill = "gold", stroke = 0.8) +
+  scale_color_manual(values = c("positive" = "#E74C3C", "negative" = "#3498DB")) +
+  labs(title = "P. evermanni: lncRNA-Gene Expression Correlations",
+       subtitle = "Gold = biomineralization genes",
+       x = "Pearson Correlation",
+       y = "-log10(p-value)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r peve-top-lncrnas}
+# Top lncRNAs by number of significant correlations
+peve_top_lncrnas <- peve_sig %>%
+  group_by(lncrna_id) %>%
+  summarise(
+    n_positive = sum(direction == "positive"),
+    n_negative = sum(direction == "negative"),
+    n_total = n(),
+    n_biomin = sum(is_biomin),
+    mean_cor = mean(cor)
+  ) %>%
+  arrange(desc(n_total))
+
+cat("\nTop 20 lncRNAs by number of correlated genes:\n")
+head(peve_top_lncrnas, 20)
+```
+
+# Pocillopora tuahiniensis Analysis
+
+```{r ptua-correlation, cache=TRUE}
+# Check column names
+cat("Ptua gene columns:", head(names(ptua_gene)), "\n")
+cat("Ptua lncRNA columns:", head(names(ptua_lncrna)), "\n")
+
+# Calculate correlations
+ptua_cors <- calculate_correlations(
+  ptua_gene, 
+  ptua_lncrna,
+  gene_id_col = names(ptua_gene)[1],
+  min_counts = 10
+)
+
+# Get significant correlations
+ptua_sig <- get_significant_cors(ptua_cors, padj_threshold = 0.05, cor_threshold = 0.5)
+
+cat("\nSignificant lncRNA-gene correlations in P. tuahiniensis:\n")
+cat("Total significant:", nrow(ptua_sig), "\n")
+cat("Positive correlations:", sum(ptua_sig$direction == "positive"), "\n")
+cat("Negative correlations:", sum(ptua_sig$direction == "negative"), "\n")
+```
+
+```{r ptua-biomin-highlight}
+# Clean gene IDs for matching
+ptua_sig <- ptua_sig %>%
+  mutate(gene_id_clean = str_replace(gene_id, "^gene-", "")) %>%
+  mutate(is_biomin = gene_id_clean %in% ptua_biomin$gene_id | gene_id %in% ptua_biomin$gene_id)
+
+cat("\nBiomin genes with significant lncRNA correlations:\n")
+ptua_sig %>%
+  filter(is_biomin) %>%
+  arrange(padj) %>%
+  head(20)
+```
+
+```{r ptua-plot, fig.width=10, fig.height=8}
+# Volcano-style plot
+ggplot(ptua_cors %>% filter(!is.na(cor)), 
+       aes(x = cor, y = -log10(pval))) +
+  geom_point(alpha = 0.1, color = "gray70", size = 0.5) +
+  geom_point(data = ptua_sig %>% filter(!is_biomin),
+             aes(color = direction), alpha = 0.5, size = 1) +
+  geom_point(data = ptua_sig %>% filter(is_biomin),
+             color = "black", size = 2.5, shape = 21, fill = "gold", stroke = 0.8) +
+  scale_color_manual(values = c("positive" = "#E74C3C", "negative" = "#3498DB")) +
+  labs(title = "P. tuahiniensis: lncRNA-Gene Expression Correlations",
+       subtitle = "Gold = biomineralization genes",
+       x = "Pearson Correlation",
+       y = "-log10(p-value)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r ptua-top-lncrnas}
+# Top lncRNAs by number of significant correlations
+ptua_top_lncrnas <- ptua_sig %>%
+  group_by(lncrna_id) %>%
+  summarise(
+    n_positive = sum(direction == "positive"),
+    n_negative = sum(direction == "negative"),
+    n_total = n(),
+    n_biomin = sum(is_biomin),
+    mean_cor = mean(cor)
+  ) %>%
+  arrange(desc(n_total))
+
+cat("\nTop 20 lncRNAs by number of correlated genes:\n")
+head(ptua_top_lncrnas, 20)
+```
+
+# Summary Across Species
+
+```{r summary-comparison, fig.width=12, fig.height=5}
+# Create summary dataframe
+summary_df <- data.frame(
+  Species = c("A. pulchra", "P. evermanni", "P. tuahiniensis"),
+  Positive = c(
+    sum(apul_sig$direction == "positive"),
+    sum(peve_sig$direction == "positive"),
+    sum(ptua_sig$direction == "positive")
+  ),
+  Negative = c(
+    sum(apul_sig$direction == "negative"),
+    sum(peve_sig$direction == "negative"),
+    sum(ptua_sig$direction == "negative")
+  ),
+  Biomin_associated = c(
+    sum(apul_sig$is_biomin),
+    sum(peve_sig$is_biomin),
+    sum(ptua_sig$is_biomin)
+  )
+)
+
+summary_df$Total <- summary_df$Positive + summary_df$Negative
+
+print(summary_df)
+
+# Plot comparison
+summary_long <- summary_df %>%
+  pivot_longer(cols = c(Positive, Negative), 
+               names_to = "Direction", 
+               values_to = "Count")
+
+ggplot(summary_long, aes(x = Species, y = Count, fill = Direction)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("Positive" = "#E74C3C", "Negative" = "#3498DB")) +
+  labs(title = "Significant lncRNA-Gene Correlations Across Species",
+       y = "Number of Significant Correlations") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+# Biomin Gene Focus
+
+```{r biomin-focus, fig.width=14, fig.height=6}
+# Combine biomin results across species
+biomin_combined <- bind_rows(
+  apul_sig %>% filter(is_biomin) %>% mutate(species = "A. pulchra"),
+  peve_sig %>% filter(is_biomin) %>% mutate(species = "P. evermanni"),
+  ptua_sig %>% filter(is_biomin) %>% mutate(species = "P. tuahiniensis")
+)
+
+if (nrow(biomin_combined) > 0) {
+  # Plot biomin correlations
+  ggplot(biomin_combined, aes(x = cor, y = reorder(gene_id, cor), fill = direction)) +
+    geom_col() +
+    facet_wrap(~species, scales = "free_y") +
+    scale_fill_manual(values = c("positive" = "#E74C3C", "negative" = "#3498DB")) +
+    labs(title = "Biomineralization Genes with Significant lncRNA Correlations",
+         x = "Correlation Coefficient",
+         y = "Gene ID") +
+    theme_minimal() +
+    theme(axis.text.y = element_text(size = 6))
+} else {
+  cat("No significant biomin-lncRNA correlations found\n")
+}
+```
+
+# Save Results
+
+```{r save-results}
+# Create output directory
+output_dir <- "../output/37-lncRNA-correlation"
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Save significant correlations for each species
+write_csv(apul_sig, file.path(output_dir, "apul_lncrna_gene_correlations.csv"))
+write_csv(peve_sig, file.path(output_dir, "peve_lncrna_gene_correlations.csv"))
+write_csv(ptua_sig, file.path(output_dir, "ptua_lncrna_gene_correlations.csv"))
+
+# Save top lncRNAs
+write_csv(apul_top_lncrnas, file.path(output_dir, "apul_top_lncrnas.csv"))
+write_csv(peve_top_lncrnas, file.path(output_dir, "peve_top_lncrnas.csv"))
+write_csv(ptua_top_lncrnas, file.path(output_dir, "ptua_top_lncrnas.csv"))
+
+# Save summary
+write_csv(summary_df, file.path(output_dir, "species_summary.csv"))
+
+cat("Results saved to:", output_dir, "\n")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
+
