@@ -1,0 +1,247 @@
+---
+title: "36-biomin-contra"
+author: "Steven Roberts"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+# Read in Cross-Species Methylation miRNA Comparison Data
+
+```{r read-data}
+# Read CSV from remote URL
+biomin_data <- read_csv("https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/ConTra/output/biomin_comparison_20251130_052506/cross_species_methylation_mirna_comparison.csv")
+
+# Display structure of the data
+glimpse(biomin_data)
+```
+
+```{r view-columns}
+# View column names to identify context dependent columns
+colnames(biomin_data)
+```
+
+# Summary of Context Dependent Groups
+
+```{r context-dependent-summary}
+# Identify columns that contain "context" in their name (case insensitive)
+context_cols <- grep("context", names(biomin_data), ignore.case = TRUE, value = TRUE)
+cat("Context-related columns found:\n")
+print(context_cols)
+```
+
+```{r filter-context-true}
+# Filter for rows where any context dependent column is TRUE
+# First, let's see unique values in context columns
+if (length(context_cols) > 0) {
+  for (col in context_cols) {
+    cat("\nUnique values in", col, ":\n")
+    print(unique(biomin_data[[col]]))
+  }
+}
+```
+
+```{r summarize-context-dependent}
+# Filter and summarize data where context dependent columns have TRUE values
+if (length(context_cols) > 0) {
+  # Create filter for rows where any context dependent column is TRUE
+  context_true_data <- biomin_data %>%
+    filter(if_any(all_of(context_cols), ~ . == TRUE | . == "TRUE" | . == "true"))
+  
+  cat("Number of rows with context dependent = TRUE:", nrow(context_true_data), "\n\n")
+  
+  # Summarize by og_id
+  if ("og_id" %in% names(context_true_data)) {
+    context_summary <- context_true_data %>%
+      group_by(og_id) %>%
+      summarise(
+        n_records = n(),
+        across(where(is.numeric), ~ mean(.x, na.rm = TRUE), .names = "mean_{.col}"),
+        .groups = "drop"
+      )
+    
+    print(context_summary)
+  } else {
+    cat("Column 'og_id' not found in data\n")
+    print(head(context_true_data))
+  }
+}
+```
+
+```{r detailed-view}
+# Display detailed view of context-dependent records
+if (exists("context_true_data") && nrow(context_true_data) > 0) {
+
+  cat("\nDetailed view of context-dependent records:\n")
+  print(context_true_data)
+}
+```
+
+# Species-Specific and Shared Context-Dependent OGs
+
+```{r species-analysis}
+# Identify species-specific context dependent columns
+species_context_cols <- context_cols[!grepl("shared|common", context_cols, ignore.case = TRUE)]
+
+# Create summary of which OGs are TRUE for each species
+species_summary <- biomin_data %>%
+  select(og_id, all_of(context_cols), everything())
+
+# Count how many species have TRUE for each OG
+if (length(context_cols) > 0) {
+  og_species_count <- biomin_data %>%
+    rowwise() %>%
+    mutate(
+      species_true_count = sum(c_across(all_of(context_cols)) == TRUE | 
+                               c_across(all_of(context_cols)) == "TRUE" | 
+                               c_across(all_of(context_cols)) == "true", na.rm = TRUE)
+    ) %>%
+    ungroup()
+  
+  # OGs with TRUE in exactly one species (species-specific)
+  single_species_ogs <- og_species_count %>%
+    filter(species_true_count == 1)
+  
+  # OGs shared across two species
+  two_species_ogs <- og_species_count %>%
+    filter(species_true_count == 2)
+  
+  # OGs shared across three species
+  three_species_ogs <- og_species_count %>%
+    filter(species_true_count == 3)
+  
+  cat("OGs with context-dependent = TRUE in exactly 1 species:", nrow(single_species_ogs), "\n")
+  cat("OGs with context-dependent = TRUE in exactly 2 species:", nrow(two_species_ogs), "\n")
+  cat("OGs with context-dependent = TRUE in all 3 species:", nrow(three_species_ogs), "\n")
+}
+```
+
+```{r species-specific-details}
+# Detailed breakdown by species
+for (col in context_cols) {
+  species_name <- gsub("_context.*|context_dependent_|_methylation.*", "", col, ignore.case = TRUE)
+  true_count <- sum(biomin_data[[col]] == TRUE | biomin_data[[col]] == "TRUE" | biomin_data[[col]] == "true", na.rm = TRUE)
+  cat("\n", species_name, "- OGs with context-dependent = TRUE:", true_count, "\n")
+  
+  species_ogs <- biomin_data %>%
+    filter(.data[[col]] == TRUE | .data[[col]] == "TRUE" | .data[[col]] == "true") %>%
+    select(og_id, all_of(col), where(is.numeric))
+  
+  if (nrow(species_ogs) > 0) {
+    print(species_ogs)
+  }
+}
+```
+
+```{r shared-ogs-summary}
+# Summary of shared OGs with quantitative metrics
+if (exists("two_species_ogs") && nrow(two_species_ogs) > 0) {
+  cat("\n=== OGs Shared Across Two Species ===\n")
+  two_species_summary <- two_species_ogs %>%
+    select(og_id, all_of(context_cols), where(is.numeric))
+  print(two_species_summary)
+}
+
+if (exists("three_species_ogs") && nrow(three_species_ogs) > 0) {
+  cat("\n=== OGs Shared Across All Three Species ===\n")
+  three_species_summary <- three_species_ogs %>%
+    select(og_id, all_of(context_cols), where(is.numeric))
+  print(three_species_summary)
+}
+```
+
+```{r quantitative-summary}
+# Generate quantitative summary statistics for context-dependent OGs
+if (exists("context_true_data") && nrow(context_true_data) > 0) {
+  numeric_cols <- names(context_true_data)[sapply(context_true_data, is.numeric)]
+  
+  if (length(numeric_cols) > 0) {
+    cat("\n=== Quantitative Summary of Context-Dependent OGs ===\n")
+    quant_summary <- context_true_data %>%
+      summarise(across(all_of(numeric_cols), 
+                       list(mean = ~mean(.x, na.rm = TRUE),
+                            sd = ~sd(.x, na.rm = TRUE),
+                            min = ~min(.x, na.rm = TRUE),
+                            max = ~max(.x, na.rm = TRUE)),
+                       .names = "{.col}_{.fn}"))
+    
+    # Transpose for better readability
+    quant_summary_long <- quant_summary %>%
+      pivot_longer(everything(), names_to = "metric", values_to = "value")
+    print(quant_summary_long)
+  }
+}
+```
+
+# Summary Paragraph
+
+```{r generate-paragraph, results='asis'}
+# Generate dynamic summary paragraph
+if (exists("context_cols") && length(context_cols) > 0) {
+  
+  # Get counts per species
+  species_counts <- sapply(context_cols, function(col) {
+    sum(biomin_data[[col]] == TRUE | biomin_data[[col]] == "TRUE" | biomin_data[[col]] == "true", na.rm = TRUE)
+  })
+  
+  # Get OG lists per species
+  species_ogs_list <- lapply(context_cols, function(col) {
+    biomin_data %>%
+      filter(.data[[col]] == TRUE | .data[[col]] == "TRUE" | .data[[col]] == "true") %>%
+      pull(og_id)
+  })
+  names(species_ogs_list) <- context_cols
+  
+  # Build paragraph
+  cat("\n## Cross-Species Context-Dependent Methylation and miRNA Analysis\n\n")
+  
+  cat("This analysis examined orthogroup (OG) patterns across species for context-dependent methylation and miRNA associations. ")
+  
+  # Species-specific findings
+  for (i in seq_along(context_cols)) {
+    col <- context_cols[i]
+    species_name <- gsub("_context.*|context_dependent_|_methylation.*", "", col, ignore.case = TRUE)
+    ogs <- species_ogs_list[[col]]
+    if (length(ogs) > 0) {
+      cat("**", species_name, "** showed context-dependent patterns in ", length(ogs), " OGs (", 
+          paste(head(ogs, 5), collapse = ", "), if(length(ogs) > 5) ", ..." else "", "). ", sep = "")
+    }
+  }
+  
+  # Shared patterns
+  if (exists("two_species_ogs") && nrow(two_species_ogs) > 0) {
+    cat("\n\nA total of **", nrow(two_species_ogs), " OGs** exhibited context-dependent patterns shared across exactly two species", sep = "")
+    if (nrow(two_species_ogs) <= 10) {
+      cat(" (", paste(two_species_ogs$og_id, collapse = ", "), ")", sep = "")
+    }
+    cat(". ")
+  }
+  
+  if (exists("three_species_ogs") && nrow(three_species_ogs) > 0) {
+    cat("Notably, **", nrow(three_species_ogs), " OGs** showed conserved context-dependent patterns across all three species", sep = "")
+    if (nrow(three_species_ogs) <= 10) {
+      cat(" (", paste(three_species_ogs$og_id, collapse = ", "), ")", sep = "")
+    }
+    cat(", suggesting evolutionary conservation of these regulatory mechanisms. ")
+  }
+  
+  # Quantitative highlights
+  if (exists("context_true_data") && nrow(context_true_data) > 0) {
+    numeric_cols <- names(context_true_data)[sapply(context_true_data, is.numeric)]
+    if (length(numeric_cols) > 0) {
+      cat("\n\nQuantitatively, context-dependent OGs showed the following characteristics: ")
+      for (nc in head(numeric_cols, 3)) {
+        mean_val <- mean(context_true_data[[nc]], na.rm = TRUE)
+        sd_val <- sd(context_true_data[[nc]], na.rm = TRUE)
+        cat("**", nc, "** (mean ± SD: ", round(mean_val, 3), " ± ", round(sd_val, 3), "); ", sep = "")
+      }
+    }
+  }
+  
+  cat("\n")
+}
+```
