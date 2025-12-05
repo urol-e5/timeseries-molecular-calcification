@@ -1,0 +1,1144 @@
+---
+title: "38-lncRNA-gbm-reg"
+output: html_document
+date: "2025-12-03"
+---
+
+# lncRNA and Gene Body Methylation Regulation Analysis
+
+This analysis investigates how long non-coding RNAs (lncRNAs) and gene body methylation (GBM) 
+potentially regulate gene expression across three coral species:
+- Acropora pulchra
+- Porites evermanni  
+- Pocillopora tuahiniensis
+
+We examine whether regulation occurs through:
+1. lncRNA alone
+2. DNA methylation alone
+3. Combined lncRNA and methylation effects
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r libraries}
+library(tidyverse)
+library(corrr)
+library(pheatmap)
+library(ggplot2)
+library(scales)
+library(ggrepel)
+library(patchwork)
+```
+
+# Load Data
+
+## Gene Expression Count Matrices
+
+```{r load-gene-expression}
+# Acropora pulchra
+apul_gene <- read_csv(
+  "https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/D-Apul/output/02.20-D-Apul-RNAseq-alignment-HiSat2/apul-gene_count_matrix.csv",
+  show_col_types = FALSE
+)
+
+# Porites evermanni
+peve_gene <- read_csv(
+  "https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/E-Peve/output/02.20-E-Peve-RNAseq-alignment-HiSat2/peve-gene_count_matrix.csv",
+  show_col_types = FALSE
+)
+
+# Pocillopora tuahiniensis
+ptua_gene <- read_csv(
+  "https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/F-Ptua/output/02.20-F-Ptua-RNAseq-alignment-HiSat2/ptua-gene_count_matrix.csv",
+  show_col_types = FALSE
+)
+
+cat("Gene expression matrices loaded:\n")
+cat("Apul genes:", nrow(apul_gene), "x", ncol(apul_gene), "\n")
+cat("Peve genes:", nrow(peve_gene), "x", ncol(peve_gene), "\n")
+cat("Ptua genes:", nrow(ptua_gene), "x", ncol(ptua_gene), "\n")
+```
+
+## lncRNA Count Matrices
+
+```{r load-lncrna}
+# Acropora pulchra lncRNA
+apul_lncrna <- read_tsv(
+  "https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/timeseries_molecular/D-Apul/output/31.5-Apul-lncRNA-discovery/lncRNA_counts.clean.filtered.txt",
+  show_col_types = FALSE
+)
+
+# Porites evermanni lncRNA
+peve_lncrna <- read_tsv(
+  "https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/timeseries_molecular/E-Peve/output/12-Peve-lncRNA-discovery/lncRNA_counts.clean.filtered.txt",
+  show_col_types = FALSE
+)
+
+# Pocillopora tuahiniensis lncRNA
+ptua_lncrna <- read_tsv(
+  "https://raw.githubusercontent.com/urol-e5/timeseries_molecular/refs/heads/main/F-Ptua/output/06-Ptua-lncRNA-discovery/lncRNA_counts.clean.filtered.txt",
+  show_col_types = FALSE
+)
+
+cat("lncRNA matrices loaded:\n")
+cat("Apul lncRNAs:", nrow(apul_lncrna), "x", ncol(apul_lncrna), "\n")
+cat("Peve lncRNAs:", nrow(peve_lncrna), "x", ncol(peve_lncrna), "\n")
+cat("Ptua lncRNAs:", nrow(ptua_lncrna), "x", ncol(ptua_lncrna), "\n")
+```
+
+## Gene Body Methylation Data
+
+```{r load-gbm}
+# Acropora pulchra GBM
+apul_gbm <- read_tsv(
+  "https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/D-Apul/output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv",
+  show_col_types = FALSE
+)
+
+# Porites evermanni GBM
+peve_gbm <- read_tsv(
+  "https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/E-Peve/output/15-Peve-Gene-Methylation/Peve-gene-methylation_75pct.tsv",
+  show_col_types = FALSE
+)
+
+# Pocillopora tuahiniensis GBM
+ptua_gbm <- read_tsv(
+  "https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/F-Ptua/output/09-Ptua-Gene-Methylation/Ptua-gene-methylation_75pct.tsv",
+  show_col_types = FALSE
+)
+
+cat("Gene body methylation data loaded:\n")
+cat("Apul GBM:", nrow(apul_gbm), "x", ncol(apul_gbm), "\n")
+cat("Peve GBM:", nrow(peve_gbm), "x", ncol(peve_gbm), "\n")
+cat("Ptua GBM:", nrow(ptua_gbm), "x", ncol(ptua_gbm), "\n")
+```
+
+## Biomineralization Gene Lists
+
+```{r load-biomin}
+# Biomin gene lists for highlighting
+apul_biomin <- read_csv(
+  "https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/apul_biomin_counts.csv",
+  show_col_types = FALSE
+)
+
+peve_biomin <- read_csv(
+  "https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/peve_biomin_counts.csv",
+  show_col_types = FALSE
+)
+
+ptua_biomin <- read_csv(
+  "https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/ptua_biomin_counts.csv",
+  show_col_types = FALSE
+)
+
+cat("Biomin genes loaded:\n")
+cat("Apul biomin genes:", nrow(apul_biomin), "\n")
+cat("Peve biomin genes:", nrow(peve_biomin), "\n")
+cat("Ptua biomin genes:", nrow(ptua_biomin), "\n")
+```
+
+# Explore Data Structure
+
+```{r explore-data}
+# Check column names to understand data structure
+cat("\n=== Gene Expression Column Names ===\n")
+cat("Apul:", paste(head(names(apul_gene), 10), collapse = ", "), "\n")
+cat("Peve:", paste(head(names(peve_gene), 10), collapse = ", "), "\n")
+cat("Ptua:", paste(head(names(ptua_gene), 10), collapse = ", "), "\n")
+
+cat("\n=== lncRNA Column Names ===\n")
+cat("Apul:", paste(head(names(apul_lncrna), 10), collapse = ", "), "\n")
+cat("Peve:", paste(head(names(peve_lncrna), 10), collapse = ", "), "\n")
+cat("Ptua:", paste(head(names(ptua_lncrna), 10), collapse = ", "), "\n")
+
+cat("\n=== GBM Column Names ===\n")
+cat("Apul:", paste(head(names(apul_gbm), 10), collapse = ", "), "\n")
+cat("Peve:", paste(head(names(peve_gbm), 10), collapse = ", "), "\n")
+cat("Ptua:", paste(head(names(ptua_gbm), 10), collapse = ", "), "\n")
+
+cat("\n=== Biomin Column Names ===\n")
+cat("Apul:", paste(names(apul_biomin), collapse = ", "), "\n")
+cat("Peve:", paste(names(peve_biomin), collapse = ", "), "\n")
+cat("Ptua:", paste(names(ptua_biomin), collapse = ", "), "\n")
+```
+
+# Helper Functions
+
+```{r helper-functions}
+# Function to calculate lncRNA-gene correlations
+calculate_lncrna_gene_cors <- function(gene_df, lncrna_df, gene_id_col = "gene_id", 
+                                       lncrna_id_col = NULL, min_counts = 10) {
+  
+  if (is.null(lncrna_id_col)) {
+    lncrna_id_col <- names(lncrna_df)[1]
+  }
+  
+  gene_samples <- setdiff(names(gene_df), gene_id_col)
+  lncrna_samples <- setdiff(names(lncrna_df), lncrna_id_col)
+  shared_samples <- intersect(gene_samples, lncrna_samples)
+  
+  cat("Shared samples:", length(shared_samples), "\n")
+  
+  if (length(shared_samples) < 3) {
+    warning("Not enough shared samples")
+    return(NULL)
+  }
+  
+  gene_mat <- gene_df %>%
+    select(all_of(c(gene_id_col, shared_samples))) %>%
+    column_to_rownames(gene_id_col) %>%
+    as.matrix()
+  
+  lncrna_mat <- lncrna_df %>%
+    select(all_of(c(lncrna_id_col, shared_samples))) %>%
+    column_to_rownames(lncrna_id_col) %>%
+    as.matrix()
+  
+  gene_keep <- rowSums(gene_mat) >= min_counts
+  lncrna_keep <- rowSums(lncrna_mat) >= min_counts
+  
+  gene_mat <- gene_mat[gene_keep, ]
+  lncrna_mat <- lncrna_mat[lncrna_keep, ]
+  
+  cat("Genes after filtering:", nrow(gene_mat), "\n")
+  cat("lncRNAs after filtering:", nrow(lncrna_mat), "\n")
+  
+  gene_log <- log2(gene_mat + 1)
+  lncrna_log <- log2(lncrna_mat + 1)
+  
+  n_lncrna <- nrow(lncrna_log)
+  results <- vector("list", n_lncrna)
+  
+  for (i in seq_len(n_lncrna)) {
+    lncrna_id <- rownames(lncrna_log)[i]
+    lncrna_expr <- lncrna_log[i, ]
+    
+    cors <- apply(gene_log, 1, function(gene_expr) {
+      if (sd(gene_expr) == 0 | sd(lncrna_expr) == 0) {
+        return(c(cor = NA, pval = NA))
+      }
+      test <- cor.test(lncrna_expr, gene_expr, method = "pearson")
+      c(cor = test$estimate, pval = test$p.value)
+    })
+    
+    cors_df <- as.data.frame(t(cors))
+    cors_df$gene_id <- rownames(cors_df)
+    cors_df$lncrna_id <- lncrna_id
+    results[[i]] <- cors_df
+  }
+  
+  all_cors <- bind_rows(results) %>%
+    filter(!is.na(pval)) %>%
+    mutate(padj = p.adjust(pval, method = "BH")) %>%
+    arrange(padj)
+  
+  return(all_cors)
+}
+
+# Function to calculate GBM-gene expression correlations
+calculate_gbm_gene_cors <- function(gene_df, gbm_df, gene_id_col = "gene_id",
+                                    gbm_gene_col = NULL, min_counts = 10) {
+  
+  if (is.null(gbm_gene_col)) {
+    gbm_gene_col <- names(gbm_df)[1]
+  }
+  
+  # Get sample columns
+  gene_samples <- setdiff(names(gene_df), gene_id_col)
+  gbm_samples <- setdiff(names(gbm_df), gbm_gene_col)
+  
+  # Find shared samples - may need sample name matching
+  shared_samples <- intersect(gene_samples, gbm_samples)
+  
+  cat("Gene samples:", length(gene_samples), "\n")
+  cat("GBM samples:", length(gbm_samples), "\n")
+  cat("Shared samples:", length(shared_samples), "\n")
+  
+  if (length(shared_samples) < 3) {
+    # Try to match sample names with different formats
+    cat("Attempting fuzzy sample matching...\n")
+    # Extract sample IDs from both datasets
+    gene_sample_ids <- str_extract(gene_samples, "[0-9]+")
+    gbm_sample_ids <- str_extract(gbm_samples, "[0-9]+")
+    
+    # Match by common numeric identifiers
+    for (i in seq_along(gene_samples)) {
+      for (j in seq_along(gbm_samples)) {
+        if (!is.na(gene_sample_ids[i]) && !is.na(gbm_sample_ids[j])) {
+          if (gene_sample_ids[i] == gbm_sample_ids[j]) {
+            names(gbm_df)[which(names(gbm_df) == gbm_samples[j])] <- gene_samples[i]
+          }
+        }
+      }
+    }
+    gbm_samples <- setdiff(names(gbm_df), gbm_gene_col)
+    shared_samples <- intersect(gene_samples, gbm_samples)
+    cat("After fuzzy matching, shared samples:", length(shared_samples), "\n")
+  }
+  
+  if (length(shared_samples) < 3) {
+    warning("Not enough shared samples for correlation")
+    return(NULL)
+  }
+  
+  # Find genes present in both datasets
+  gene_ids <- gene_df[[gene_id_col]]
+  gbm_gene_ids <- gbm_df[[gbm_gene_col]]
+  
+  # Clean gene IDs for matching
+  gene_ids_clean <- str_replace(gene_ids, "^gene-", "")
+  gbm_gene_ids_clean <- str_replace(gbm_gene_ids, "^gene-", "")
+  
+  shared_genes <- intersect(gene_ids_clean, gbm_gene_ids_clean)
+  cat("Shared genes:", length(shared_genes), "\n")
+  
+  if (length(shared_genes) < 10) {
+    warning("Too few shared genes")
+    return(NULL)
+  }
+  
+  # Prepare gene expression matrix
+  gene_df_clean <- gene_df %>%
+    mutate(gene_clean = str_replace(.[[gene_id_col]], "^gene-", "")) %>%
+    filter(gene_clean %in% shared_genes) %>%
+    select(gene_clean, all_of(shared_samples))
+  
+  # Prepare GBM matrix
+  gbm_df_clean <- gbm_df %>%
+    mutate(gene_clean = str_replace(.[[gbm_gene_col]], "^gene-", "")) %>%
+    filter(gene_clean %in% shared_genes) %>%
+    select(gene_clean, all_of(shared_samples))
+  
+  # Match gene order
+  gene_df_clean <- gene_df_clean %>% arrange(gene_clean)
+  gbm_df_clean <- gbm_df_clean %>% arrange(gene_clean)
+  
+  # Filter low-expression genes
+  gene_mat <- gene_df_clean %>%
+    column_to_rownames("gene_clean") %>%
+    as.matrix()
+  
+  keep_genes <- rowSums(gene_mat) >= min_counts
+  gene_mat <- gene_mat[keep_genes, ]
+  
+  gbm_mat <- gbm_df_clean %>%
+    filter(gene_clean %in% rownames(gene_mat)) %>%
+    column_to_rownames("gene_clean") %>%
+    as.matrix()
+  
+  # Align matrices
+  common_genes <- intersect(rownames(gene_mat), rownames(gbm_mat))
+  gene_mat <- gene_mat[common_genes, , drop = FALSE]
+  gbm_mat <- gbm_mat[common_genes, , drop = FALSE]
+  
+  cat("Genes for correlation:", nrow(gene_mat), "\n")
+  
+  # Calculate correlation for each gene across samples
+  results <- data.frame(
+    gene_id = common_genes,
+    cor = NA_real_,
+    pval = NA_real_
+  )
+  
+  gene_log <- log2(gene_mat + 1)
+  
+  for (i in seq_len(nrow(gene_log))) {
+    expr <- gene_log[i, ]
+    meth <- gbm_mat[i, ]
+    
+    if (sd(expr) > 0 & sd(meth, na.rm = TRUE) > 0) {
+      # Remove NA values for correlation
+      valid_idx <- !is.na(meth)
+      if (sum(valid_idx) >= 3) {
+        test <- cor.test(expr[valid_idx], meth[valid_idx], method = "pearson")
+        results$cor[i] <- test$estimate
+        results$pval[i] <- test$p.value
+      }
+    }
+  }
+  
+  results <- results %>%
+    filter(!is.na(pval)) %>%
+    mutate(padj = p.adjust(pval, method = "BH")) %>%
+    arrange(padj)
+  
+  return(results)
+}
+
+# Function to identify significant correlations
+get_significant_cors <- function(cor_df, padj_threshold = 0.05, cor_threshold = 0.5) {
+  cor_df %>%
+    filter(padj < padj_threshold & abs(cor) >= cor_threshold) %>%
+    mutate(direction = ifelse(cor > 0, "positive", "negative"))
+}
+
+# Function to classify regulation type
+classify_regulation <- function(lncrna_sig, gbm_sig, biomin_genes) {
+  # Get unique genes from each source
+  lncrna_genes <- unique(lncrna_sig$gene_id)
+  gbm_genes <- unique(gbm_sig$gene_id)
+  
+  # Classify genes by regulation type
+  both_regulated <- intersect(lncrna_genes, gbm_genes)
+  lncrna_only <- setdiff(lncrna_genes, gbm_genes)
+  gbm_only <- setdiff(gbm_genes, lncrna_genes)
+  
+  cat("\n=== Regulation Classification ===\n")
+  cat("Regulated by both lncRNA and GBM:", length(both_regulated), "\n")
+  cat("Regulated by lncRNA only:", length(lncrna_only), "\n")
+  cat("Regulated by GBM only:", length(gbm_only), "\n")
+  
+  # Check biomin status
+  both_biomin <- intersect(both_regulated, biomin_genes)
+  lncrna_biomin <- intersect(lncrna_only, biomin_genes)
+  gbm_biomin <- intersect(gbm_only, biomin_genes)
+  
+  cat("\n=== Biomineralization Genes ===\n")
+  cat("Biomin genes regulated by both:", length(both_biomin), "\n")
+  cat("Biomin genes regulated by lncRNA only:", length(lncrna_biomin), "\n")
+  cat("Biomin genes regulated by GBM only:", length(gbm_biomin), "\n")
+  
+  # Create summary dataframe
+  summary_df <- data.frame(
+    regulation_type = c("Both", "lncRNA_only", "GBM_only"),
+    n_genes = c(length(both_regulated), length(lncrna_only), length(gbm_only)),
+    n_biomin = c(length(both_biomin), length(lncrna_biomin), length(gbm_biomin))
+  )
+  
+  # Detailed gene list
+  gene_details <- bind_rows(
+    data.frame(gene_id = both_regulated, regulation = "Both") %>%
+      mutate(is_biomin = gene_id %in% biomin_genes),
+    data.frame(gene_id = lncrna_only, regulation = "lncRNA_only") %>%
+      mutate(is_biomin = gene_id %in% biomin_genes),
+    data.frame(gene_id = gbm_only, regulation = "GBM_only") %>%
+      mutate(is_biomin = gene_id %in% biomin_genes)
+  )
+  
+  return(list(
+    summary = summary_df,
+    genes = gene_details,
+    both = both_regulated,
+    lncrna_only = lncrna_only,
+    gbm_only = gbm_only
+  ))
+}
+```
+
+# Acropora pulchra Analysis
+
+## lncRNA-Gene Correlations
+
+```{r apul-lncrna-cors, cache=TRUE}
+apul_lncrna_cors <- calculate_lncrna_gene_cors(
+  apul_gene, 
+  apul_lncrna,
+  gene_id_col = names(apul_gene)[1],
+  min_counts = 10
+)
+
+apul_lncrna_sig <- get_significant_cors(apul_lncrna_cors, padj_threshold = 0.05, cor_threshold = 0.5)
+
+cat("\nSignificant lncRNA-gene correlations:\n")
+cat("Total:", nrow(apul_lncrna_sig), "\n")
+cat("Positive:", sum(apul_lncrna_sig$direction == "positive"), "\n")
+cat("Negative:", sum(apul_lncrna_sig$direction == "negative"), "\n")
+```
+
+## GBM-Gene Correlations
+
+```{r apul-gbm-cors, cache=TRUE}
+apul_gbm_cors <- calculate_gbm_gene_cors(
+  apul_gene,
+  apul_gbm,
+  gene_id_col = names(apul_gene)[1],
+  min_counts = 10
+)
+
+if (!is.null(apul_gbm_cors)) {
+  apul_gbm_sig <- get_significant_cors(apul_gbm_cors, padj_threshold = 0.05, cor_threshold = 0.3)
+  
+  cat("\nSignificant GBM-gene correlations:\n")
+  cat("Total:", nrow(apul_gbm_sig), "\n")
+  cat("Positive:", sum(apul_gbm_sig$direction == "positive"), "\n")
+  cat("Negative:", sum(apul_gbm_sig$direction == "negative"), "\n")
+} else {
+  apul_gbm_sig <- data.frame(gene_id = character(), cor = numeric(), direction = character())
+  cat("Unable to calculate GBM correlations - insufficient sample overlap\n")
+}
+```
+
+## Classify Regulation
+
+```{r apul-classify}
+# Get biomin gene list
+apul_biomin_ids <- apul_biomin$gene_id
+
+# Clean gene IDs for matching
+apul_lncrna_sig_clean <- apul_lncrna_sig %>%
+  mutate(gene_id = str_replace(gene_id, "^gene-", ""))
+
+if (nrow(apul_gbm_sig) > 0) {
+  apul_gbm_sig_clean <- apul_gbm_sig %>%
+    mutate(gene_id = str_replace(gene_id, "^gene-", ""))
+} else {
+  apul_gbm_sig_clean <- data.frame(gene_id = character())
+}
+
+apul_regulation <- classify_regulation(
+  apul_lncrna_sig_clean,
+  apul_gbm_sig_clean,
+  apul_biomin_ids
+)
+
+print(apul_regulation$summary)
+```
+
+## Visualize A. pulchra Results
+
+```{r apul-viz, fig.width=14, fig.height=6}
+# Regulation type bar plot
+p1 <- ggplot(apul_regulation$summary, aes(x = regulation_type, y = n_genes, fill = regulation_type)) +
+  geom_col() +
+  geom_text(aes(label = n_genes), vjust = -0.5) +
+  scale_fill_manual(values = c("Both" = "#9B59B6", "lncRNA_only" = "#E74C3C", "GBM_only" = "#3498DB")) +
+  labs(title = "A. pulchra: Gene Regulation Types",
+       x = "Regulation Type",
+       y = "Number of Genes") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Biomin breakdown
+p2 <- ggplot(apul_regulation$summary, aes(x = regulation_type, y = n_biomin, fill = regulation_type)) +
+  geom_col() +
+  geom_text(aes(label = n_biomin), vjust = -0.5) +
+  scale_fill_manual(values = c("Both" = "#9B59B6", "lncRNA_only" = "#E74C3C", "GBM_only" = "#3498DB")) +
+  labs(title = "A. pulchra: Biomineralization Genes",
+       x = "Regulation Type",
+       y = "Number of Biomin Genes") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p1 + p2
+```
+
+```{r apul-volcano, fig.width=12, fig.height=5}
+# Volcano plots for both correlation types
+p3 <- ggplot(apul_lncrna_cors %>% filter(!is.na(cor)), 
+       aes(x = cor, y = -log10(pval))) +
+  geom_point(alpha = 0.1, color = "gray70", size = 0.5) +
+  geom_point(data = apul_lncrna_sig,
+             aes(color = direction), alpha = 0.5, size = 1) +
+  scale_color_manual(values = c("positive" = "#E74C3C", "negative" = "#3498DB")) +
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed", alpha = 0.5) +
+  labs(title = "A. pulchra: lncRNA-Gene Correlations",
+       x = "Pearson Correlation",
+       y = "-log10(p-value)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+if (!is.null(apul_gbm_cors) && nrow(apul_gbm_cors) > 0) {
+  p4 <- ggplot(apul_gbm_cors %>% filter(!is.na(cor)), 
+         aes(x = cor, y = -log10(pval))) +
+    geom_point(alpha = 0.3, color = "gray70", size = 1) +
+    geom_point(data = apul_gbm_sig,
+               aes(color = direction), alpha = 0.7, size = 1.5) +
+    scale_color_manual(values = c("positive" = "#E74C3C", "negative" = "#3498DB")) +
+    geom_vline(xintercept = c(-0.3, 0.3), linetype = "dashed", alpha = 0.5) +
+    labs(title = "A. pulchra: GBM-Gene Correlations",
+         x = "Pearson Correlation",
+         y = "-log10(p-value)") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  p3 + p4
+} else {
+  print(p3)
+}
+```
+
+# Porites evermanni Analysis
+
+## lncRNA-Gene Correlations
+
+```{r peve-lncrna-cors, cache=TRUE}
+peve_lncrna_cors <- calculate_lncrna_gene_cors(
+  peve_gene, 
+  peve_lncrna,
+  gene_id_col = names(peve_gene)[1],
+  min_counts = 10
+)
+
+peve_lncrna_sig <- get_significant_cors(peve_lncrna_cors, padj_threshold = 0.05, cor_threshold = 0.5)
+
+cat("\nSignificant lncRNA-gene correlations:\n")
+cat("Total:", nrow(peve_lncrna_sig), "\n")
+cat("Positive:", sum(peve_lncrna_sig$direction == "positive"), "\n")
+cat("Negative:", sum(peve_lncrna_sig$direction == "negative"), "\n")
+```
+
+## GBM-Gene Correlations
+
+```{r peve-gbm-cors, cache=TRUE}
+peve_gbm_cors <- calculate_gbm_gene_cors(
+  peve_gene,
+  peve_gbm,
+  gene_id_col = names(peve_gene)[1],
+  min_counts = 10
+)
+
+if (!is.null(peve_gbm_cors)) {
+  peve_gbm_sig <- get_significant_cors(peve_gbm_cors, padj_threshold = 0.05, cor_threshold = 0.3)
+  
+  cat("\nSignificant GBM-gene correlations:\n")
+  cat("Total:", nrow(peve_gbm_sig), "\n")
+  cat("Positive:", sum(peve_gbm_sig$direction == "positive"), "\n")
+  cat("Negative:", sum(peve_gbm_sig$direction == "negative"), "\n")
+} else {
+  peve_gbm_sig <- data.frame(gene_id = character(), cor = numeric(), direction = character())
+  cat("Unable to calculate GBM correlations - insufficient sample overlap\n")
+}
+```
+
+## Classify Regulation
+
+```{r peve-classify}
+peve_biomin_ids <- peve_biomin$gene_id
+
+peve_lncrna_sig_clean <- peve_lncrna_sig %>%
+  mutate(gene_id = str_replace(gene_id, "^gene-", ""))
+
+if (nrow(peve_gbm_sig) > 0) {
+  peve_gbm_sig_clean <- peve_gbm_sig %>%
+    mutate(gene_id = str_replace(gene_id, "^gene-", ""))
+} else {
+  peve_gbm_sig_clean <- data.frame(gene_id = character())
+}
+
+peve_regulation <- classify_regulation(
+  peve_lncrna_sig_clean,
+  peve_gbm_sig_clean,
+  peve_biomin_ids
+)
+
+print(peve_regulation$summary)
+```
+
+## Visualize P. evermanni Results
+
+```{r peve-viz, fig.width=14, fig.height=6}
+p5 <- ggplot(peve_regulation$summary, aes(x = regulation_type, y = n_genes, fill = regulation_type)) +
+  geom_col() +
+  geom_text(aes(label = n_genes), vjust = -0.5) +
+  scale_fill_manual(values = c("Both" = "#9B59B6", "lncRNA_only" = "#E74C3C", "GBM_only" = "#3498DB")) +
+  labs(title = "P. evermanni: Gene Regulation Types",
+       x = "Regulation Type",
+       y = "Number of Genes") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p6 <- ggplot(peve_regulation$summary, aes(x = regulation_type, y = n_biomin, fill = regulation_type)) +
+  geom_col() +
+  geom_text(aes(label = n_biomin), vjust = -0.5) +
+  scale_fill_manual(values = c("Both" = "#9B59B6", "lncRNA_only" = "#E74C3C", "GBM_only" = "#3498DB")) +
+  labs(title = "P. evermanni: Biomineralization Genes",
+       x = "Regulation Type",
+       y = "Number of Biomin Genes") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p5 + p6
+```
+
+```{r peve-volcano, fig.width=12, fig.height=5}
+p7 <- ggplot(peve_lncrna_cors %>% filter(!is.na(cor)), 
+       aes(x = cor, y = -log10(pval))) +
+  geom_point(alpha = 0.1, color = "gray70", size = 0.5) +
+  geom_point(data = peve_lncrna_sig,
+             aes(color = direction), alpha = 0.5, size = 1) +
+  scale_color_manual(values = c("positive" = "#E74C3C", "negative" = "#3498DB")) +
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed", alpha = 0.5) +
+  labs(title = "P. evermanni: lncRNA-Gene Correlations",
+       x = "Pearson Correlation",
+       y = "-log10(p-value)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+if (!is.null(peve_gbm_cors) && nrow(peve_gbm_cors) > 0) {
+  p8 <- ggplot(peve_gbm_cors %>% filter(!is.na(cor)), 
+         aes(x = cor, y = -log10(pval))) +
+    geom_point(alpha = 0.3, color = "gray70", size = 1) +
+    geom_point(data = peve_gbm_sig,
+               aes(color = direction), alpha = 0.7, size = 1.5) +
+    scale_color_manual(values = c("positive" = "#E74C3C", "negative" = "#3498DB")) +
+    geom_vline(xintercept = c(-0.3, 0.3), linetype = "dashed", alpha = 0.5) +
+    labs(title = "P. evermanni: GBM-Gene Correlations",
+         x = "Pearson Correlation",
+         y = "-log10(p-value)") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  p7 + p8
+} else {
+  print(p7)
+}
+```
+
+# Pocillopora tuahiniensis Analysis
+
+## lncRNA-Gene Correlations
+
+```{r ptua-lncrna-cors, cache=TRUE}
+ptua_lncrna_cors <- calculate_lncrna_gene_cors(
+  ptua_gene, 
+  ptua_lncrna,
+  gene_id_col = names(ptua_gene)[1],
+  min_counts = 10
+)
+
+ptua_lncrna_sig <- get_significant_cors(ptua_lncrna_cors, padj_threshold = 0.05, cor_threshold = 0.5)
+
+cat("\nSignificant lncRNA-gene correlations:\n")
+cat("Total:", nrow(ptua_lncrna_sig), "\n")
+cat("Positive:", sum(ptua_lncrna_sig$direction == "positive"), "\n")
+cat("Negative:", sum(ptua_lncrna_sig$direction == "negative"), "\n")
+```
+
+## GBM-Gene Correlations
+
+```{r ptua-gbm-cors, cache=TRUE}
+ptua_gbm_cors <- calculate_gbm_gene_cors(
+  ptua_gene,
+  ptua_gbm,
+  gene_id_col = names(ptua_gene)[1],
+  min_counts = 10
+)
+
+if (!is.null(ptua_gbm_cors)) {
+  ptua_gbm_sig <- get_significant_cors(ptua_gbm_cors, padj_threshold = 0.05, cor_threshold = 0.3)
+  
+  cat("\nSignificant GBM-gene correlations:\n")
+  cat("Total:", nrow(ptua_gbm_sig), "\n")
+  cat("Positive:", sum(ptua_gbm_sig$direction == "positive"), "\n")
+  cat("Negative:", sum(ptua_gbm_sig$direction == "negative"), "\n")
+} else {
+  ptua_gbm_sig <- data.frame(gene_id = character(), cor = numeric(), direction = character())
+  cat("Unable to calculate GBM correlations - insufficient sample overlap\n")
+}
+```
+
+## Classify Regulation
+
+```{r ptua-classify}
+ptua_biomin_ids <- ptua_biomin$gene_id
+
+ptua_lncrna_sig_clean <- ptua_lncrna_sig %>%
+  mutate(gene_id = str_replace(gene_id, "^gene-", ""))
+
+if (nrow(ptua_gbm_sig) > 0) {
+  ptua_gbm_sig_clean <- ptua_gbm_sig %>%
+    mutate(gene_id = str_replace(gene_id, "^gene-", ""))
+} else {
+  ptua_gbm_sig_clean <- data.frame(gene_id = character())
+}
+
+ptua_regulation <- classify_regulation(
+  ptua_lncrna_sig_clean,
+  ptua_gbm_sig_clean,
+  ptua_biomin_ids
+)
+
+print(ptua_regulation$summary)
+```
+
+## Visualize P. tuahiniensis Results
+
+```{r ptua-viz, fig.width=14, fig.height=6}
+p9 <- ggplot(ptua_regulation$summary, aes(x = regulation_type, y = n_genes, fill = regulation_type)) +
+  geom_col() +
+  geom_text(aes(label = n_genes), vjust = -0.5) +
+  scale_fill_manual(values = c("Both" = "#9B59B6", "lncRNA_only" = "#E74C3C", "GBM_only" = "#3498DB")) +
+  labs(title = "P. tuahiniensis: Gene Regulation Types",
+       x = "Regulation Type",
+       y = "Number of Genes") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p10 <- ggplot(ptua_regulation$summary, aes(x = regulation_type, y = n_biomin, fill = regulation_type)) +
+  geom_col() +
+  geom_text(aes(label = n_biomin), vjust = -0.5) +
+  scale_fill_manual(values = c("Both" = "#9B59B6", "lncRNA_only" = "#E74C3C", "GBM_only" = "#3498DB")) +
+  labs(title = "P. tuahiniensis: Biomineralization Genes",
+       x = "Regulation Type",
+       y = "Number of Biomin Genes") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+p9 + p10
+```
+
+```{r ptua-volcano, fig.width=12, fig.height=5}
+p11 <- ggplot(ptua_lncrna_cors %>% filter(!is.na(cor)), 
+       aes(x = cor, y = -log10(pval))) +
+  geom_point(alpha = 0.1, color = "gray70", size = 0.5) +
+  geom_point(data = ptua_lncrna_sig,
+             aes(color = direction), alpha = 0.5, size = 1) +
+  scale_color_manual(values = c("positive" = "#E74C3C", "negative" = "#3498DB")) +
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed", alpha = 0.5) +
+  labs(title = "P. tuahiniensis: lncRNA-Gene Correlations",
+       x = "Pearson Correlation",
+       y = "-log10(p-value)") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+if (!is.null(ptua_gbm_cors) && nrow(ptua_gbm_cors) > 0) {
+  p12 <- ggplot(ptua_gbm_cors %>% filter(!is.na(cor)), 
+         aes(x = cor, y = -log10(pval))) +
+    geom_point(alpha = 0.3, color = "gray70", size = 1) +
+    geom_point(data = ptua_gbm_sig,
+               aes(color = direction), alpha = 0.7, size = 1.5) +
+    scale_color_manual(values = c("positive" = "#E74C3C", "negative" = "#3498DB")) +
+    geom_vline(xintercept = c(-0.3, 0.3), linetype = "dashed", alpha = 0.5) +
+    labs(title = "P. tuahiniensis: GBM-Gene Correlations",
+         x = "Pearson Correlation",
+         y = "-log10(p-value)") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  p11 + p12
+} else {
+  print(p11)
+}
+```
+
+# Cross-Species Comparison
+
+```{r cross-species-summary, fig.width=14, fig.height=8}
+# Combine regulation summaries
+all_regulation <- bind_rows(
+  apul_regulation$summary %>% mutate(species = "A. pulchra"),
+  peve_regulation$summary %>% mutate(species = "P. evermanni"),
+  ptua_regulation$summary %>% mutate(species = "P. tuahiniensis")
+)
+
+# Plot regulation types across species
+cross_reg_plot <- all_regulation %>%
+  pivot_longer(cols = c(n_genes, n_biomin), 
+               names_to = "metric", 
+               values_to = "count") %>%
+  mutate(metric = ifelse(metric == "n_genes", "All Genes", "Biomin Genes"))
+
+ggplot(cross_reg_plot, aes(x = regulation_type, y = count, fill = regulation_type)) +
+  geom_col() +
+  geom_text(aes(label = count), vjust = -0.3, size = 3) +
+  facet_grid(metric ~ species, scales = "free_y") +
+  scale_fill_manual(values = c("Both" = "#9B59B6", "lncRNA_only" = "#E74C3C", "GBM_only" = "#3498DB")) +
+  labs(title = "Gene Regulation by lncRNA and/or GBM Across Coral Species",
+       x = "Regulation Type",
+       y = "Number of Genes") +
+  theme_minimal() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r cross-species-table}
+# Summary table
+cat("\n=== Cross-Species Regulation Summary ===\n\n")
+print(all_regulation %>% 
+        select(species, regulation_type, n_genes, n_biomin) %>%
+        pivot_wider(names_from = regulation_type, 
+                    values_from = c(n_genes, n_biomin)))
+```
+
+# Detailed Biomineralization Gene Analysis
+
+```{r biomin-details, fig.width=16, fig.height=10}
+# Get detailed lncRNA and GBM info for biomin genes
+get_biomin_details <- function(lncrna_sig, gbm_sig, biomin_ids, lncrna_full, species_name) {
+  
+  # Get unique genes
+  lncrna_genes <- unique(str_replace(lncrna_sig$gene_id, "^gene-", ""))
+  gbm_genes <- unique(str_replace(gbm_sig$gene_id, "^gene-", ""))
+  
+  # Biomin genes in each category
+  biomin_lncrna <- lncrna_sig %>%
+    mutate(gene_clean = str_replace(gene_id, "^gene-", "")) %>%
+    filter(gene_clean %in% biomin_ids) %>%
+    group_by(gene_clean) %>%
+    summarise(
+      n_lncrna_cors = n(),
+      mean_lncrna_cor = mean(cor),
+      max_lncrna_cor = max(abs(cor)),
+      .groups = "drop"
+    )
+  
+  biomin_gbm <- gbm_sig %>%
+    mutate(gene_clean = str_replace(gene_id, "^gene-", "")) %>%
+    filter(gene_clean %in% biomin_ids) %>%
+    select(gene_clean, gbm_cor = cor, gbm_direction = direction)
+  
+  # Merge information
+  biomin_combined <- data.frame(gene_id = biomin_ids) %>%
+    left_join(biomin_lncrna, by = c("gene_id" = "gene_clean")) %>%
+    left_join(biomin_gbm, by = c("gene_id" = "gene_clean")) %>%
+    mutate(
+      has_lncrna = !is.na(n_lncrna_cors),
+      has_gbm = !is.na(gbm_cor),
+      regulation = case_when(
+        has_lncrna & has_gbm ~ "Both",
+        has_lncrna ~ "lncRNA_only",
+        has_gbm ~ "GBM_only",
+        TRUE ~ "None"
+      ),
+      species = species_name
+    )
+  
+  return(biomin_combined)
+}
+
+# Get details for each species
+apul_biomin_details <- get_biomin_details(
+  apul_lncrna_sig, apul_gbm_sig, apul_biomin_ids, apul_lncrna_cors, "A. pulchra"
+)
+
+peve_biomin_details <- get_biomin_details(
+  peve_lncrna_sig, peve_gbm_sig, peve_biomin_ids, peve_lncrna_cors, "P. evermanni"
+)
+
+ptua_biomin_details <- get_biomin_details(
+  ptua_lncrna_sig, ptua_gbm_sig, ptua_biomin_ids, ptua_lncrna_cors, "P. tuahiniensis"
+)
+
+# Combine all biomin details
+all_biomin_details <- bind_rows(
+  apul_biomin_details,
+  peve_biomin_details,
+  ptua_biomin_details
+)
+
+# Summary of biomin regulation
+biomin_summary <- all_biomin_details %>%
+  group_by(species, regulation) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  pivot_wider(names_from = regulation, values_from = n, values_fill = 0)
+
+cat("\n=== Biomineralization Gene Regulation Summary ===\n")
+print(biomin_summary)
+
+# Plot biomin regulation
+ggplot(all_biomin_details %>% filter(regulation != "None"), 
+       aes(x = regulation, fill = regulation)) +
+  geom_bar() +
+  facet_wrap(~species) +
+  scale_fill_manual(values = c("Both" = "#9B59B6", "lncRNA_only" = "#E74C3C", "GBM_only" = "#3498DB")) +
+  labs(title = "Biomineralization Genes by Regulation Type",
+       x = "Regulation Type",
+       y = "Number of Biomin Genes") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r biomin-heatmap-setup}
+# Show top regulated biomin genes
+show_top_biomin <- function(details, n_top = 20) {
+  details %>%
+    filter(regulation != "None") %>%
+    arrange(desc(abs(ifelse(is.na(gbm_cor), 0, gbm_cor)) + 
+                   ifelse(is.na(max_lncrna_cor), 0, max_lncrna_cor))) %>%
+    head(n_top) %>%
+    select(gene_id, regulation, n_lncrna_cors, mean_lncrna_cor, gbm_cor)
+}
+
+cat("\n=== Top Regulated Biomin Genes per Species ===\n\n")
+
+cat("A. pulchra:\n")
+print(show_top_biomin(apul_biomin_details))
+
+cat("\nP. evermanni:\n")
+print(show_top_biomin(peve_biomin_details))
+
+cat("\nP. tuahiniensis:\n")
+print(show_top_biomin(ptua_biomin_details))
+```
+
+# Concordance Analysis
+
+Are lncRNA and GBM effects concordant (same direction) or discordant?
+
+```{r concordance-analysis}
+analyze_concordance <- function(lncrna_sig, gbm_sig) {
+  # Get genes with both types of regulation
+  lncrna_summary <- lncrna_sig %>%
+    mutate(gene_clean = str_replace(gene_id, "^gene-", "")) %>%
+    group_by(gene_clean) %>%
+    summarise(
+      lncrna_mean_cor = mean(cor),
+      lncrna_direction = ifelse(lncrna_mean_cor > 0, "positive", "negative"),
+      .groups = "drop"
+    )
+  
+  gbm_summary <- gbm_sig %>%
+    mutate(gene_clean = str_replace(gene_id, "^gene-", "")) %>%
+    select(gene_clean, gbm_cor = cor, gbm_direction = direction)
+  
+  # Merge
+  both <- inner_join(lncrna_summary, gbm_summary, by = "gene_clean")
+  
+  if (nrow(both) == 0) {
+    return(data.frame(concordance = character(), n = integer()))
+  }
+  
+  both <- both %>%
+    mutate(concordance = case_when(
+      lncrna_direction == gbm_direction ~ "Concordant",
+      TRUE ~ "Discordant"
+    ))
+  
+  concordance_summary <- both %>%
+    group_by(concordance) %>%
+    summarise(n = n(), .groups = "drop")
+  
+  return(list(
+    summary = concordance_summary,
+    details = both
+  ))
+}
+
+cat("\n=== Concordance of lncRNA and GBM Effects ===\n")
+
+apul_concordance <- analyze_concordance(apul_lncrna_sig, apul_gbm_sig)
+cat("\nA. pulchra:\n")
+if (is.data.frame(apul_concordance) || length(apul_concordance$summary) > 0) {
+  print(apul_concordance$summary)
+}
+
+peve_concordance <- analyze_concordance(peve_lncrna_sig, peve_gbm_sig)
+cat("\nP. evermanni:\n")
+if (is.data.frame(peve_concordance) || length(peve_concordance$summary) > 0) {
+  print(peve_concordance$summary)
+}
+
+ptua_concordance <- analyze_concordance(ptua_lncrna_sig, ptua_gbm_sig)
+cat("\nP. tuahiniensis:\n")
+if (is.data.frame(ptua_concordance) || length(ptua_concordance$summary) > 0) {
+  print(ptua_concordance$summary)
+}
+```
+
+```{r concordance-viz, fig.width=12, fig.height=4}
+# Visualize concordance for genes with both regulation types
+concordance_plot_data <- bind_rows(
+  if (!is.data.frame(apul_concordance) && nrow(apul_concordance$details) > 0) 
+    apul_concordance$details %>% mutate(species = "A. pulchra") else NULL,
+  if (!is.data.frame(peve_concordance) && nrow(peve_concordance$details) > 0) 
+    peve_concordance$details %>% mutate(species = "P. evermanni") else NULL,
+  if (!is.data.frame(ptua_concordance) && nrow(ptua_concordance$details) > 0) 
+    ptua_concordance$details %>% mutate(species = "P. tuahiniensis") else NULL
+)
+
+if (nrow(concordance_plot_data) > 0) {
+  ggplot(concordance_plot_data, aes(x = lncrna_mean_cor, y = gbm_cor, color = concordance)) +
+    geom_point(alpha = 0.6, size = 2) +
+    geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+    geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) +
+    facet_wrap(~species) +
+    scale_color_manual(values = c("Concordant" = "#27AE60", "Discordant" = "#E74C3C")) +
+    labs(title = "Concordance of lncRNA and GBM Effects on Gene Expression",
+         x = "Mean lncRNA Correlation",
+         y = "GBM Correlation") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+} else {
+  cat("No genes with both lncRNA and GBM regulation found\n")
+}
+```
+
+# Save Results
+
+```{r save-results}
+# Create output directory
+output_dir <- "../output/38-lncRNA-gbm-reg"
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+
+# Save lncRNA correlations
+write_csv(apul_lncrna_sig, file.path(output_dir, "apul_lncrna_gene_correlations_sig.csv"))
+write_csv(peve_lncrna_sig, file.path(output_dir, "peve_lncrna_gene_correlations_sig.csv"))
+write_csv(ptua_lncrna_sig, file.path(output_dir, "ptua_lncrna_gene_correlations_sig.csv"))
+
+# Save GBM correlations
+if (nrow(apul_gbm_sig) > 0) {
+  write_csv(apul_gbm_sig, file.path(output_dir, "apul_gbm_gene_correlations_sig.csv"))
+}
+if (nrow(peve_gbm_sig) > 0) {
+  write_csv(peve_gbm_sig, file.path(output_dir, "peve_gbm_gene_correlations_sig.csv"))
+}
+if (nrow(ptua_gbm_sig) > 0) {
+  write_csv(ptua_gbm_sig, file.path(output_dir, "ptua_gbm_gene_correlations_sig.csv"))
+}
+
+# Save regulation classification
+write_csv(apul_regulation$genes, file.path(output_dir, "apul_regulation_classification.csv"))
+write_csv(peve_regulation$genes, file.path(output_dir, "peve_regulation_classification.csv"))
+write_csv(ptua_regulation$genes, file.path(output_dir, "ptua_regulation_classification.csv"))
+
+# Save biomin details
+write_csv(all_biomin_details, file.path(output_dir, "all_biomin_regulation_details.csv"))
+
+# Save cross-species summary
+write_csv(all_regulation, file.path(output_dir, "cross_species_regulation_summary.csv"))
+
+# Save full correlation results
+write_csv(apul_lncrna_cors, file.path(output_dir, "apul_lncrna_gene_correlations_full.csv"))
+write_csv(peve_lncrna_cors, file.path(output_dir, "peve_lncrna_gene_correlations_full.csv"))
+write_csv(ptua_lncrna_cors, file.path(output_dir, "ptua_lncrna_gene_correlations_full.csv"))
+
+if (!is.null(apul_gbm_cors)) write_csv(apul_gbm_cors, file.path(output_dir, "apul_gbm_gene_correlations_full.csv"))
+if (!is.null(peve_gbm_cors)) write_csv(peve_gbm_cors, file.path(output_dir, "peve_gbm_gene_correlations_full.csv"))
+if (!is.null(ptua_gbm_cors)) write_csv(ptua_gbm_cors, file.path(output_dir, "ptua_gbm_gene_correlations_full.csv"))
+
+cat("Results saved to:", output_dir, "\n")
+```
+
+# Summary
+
+```{r final-summary}
+cat("\n")
+cat("=" %>% rep(60) %>% paste(collapse = ""), "\n")
+cat("ANALYSIS SUMMARY\n")
+cat("=" %>% rep(60) %>% paste(collapse = ""), "\n")
+
+cat("\n## Data Overview\n")
+cat("Three coral species analyzed across 4 timepoints\n")
+cat("- Gene expression, lncRNA expression, and gene body methylation data integrated\n")
+
+cat("\n## lncRNA Regulation\n")
+cat("- A. pulchra: ", nrow(apul_lncrna_sig), " significant lncRNA-gene correlations\n", sep = "")
+cat("- P. evermanni: ", nrow(peve_lncrna_sig), " significant lncRNA-gene correlations\n", sep = "")
+cat("- P. tuahiniensis: ", nrow(ptua_lncrna_sig), " significant lncRNA-gene correlations\n", sep = "")
+
+cat("\n## GBM Regulation\n")
+cat("- A. pulchra: ", nrow(apul_gbm_sig), " significant GBM-gene correlations\n", sep = "")
+cat("- P. evermanni: ", nrow(peve_gbm_sig), " significant GBM-gene correlations\n", sep = "")
+cat("- P. tuahiniensis: ", nrow(ptua_gbm_sig), " significant GBM-gene correlations\n", sep = "")
+
+cat("\n## Regulation Classification\n")
+print(all_regulation)
+
+cat("\n## Biomineralization Genes\n")
+cat("Total biomin genes with any regulation:\n")
+cat("- A. pulchra: ", sum(apul_biomin_details$regulation != "None"), "\n", sep = "")
+cat("- P. evermanni: ", sum(peve_biomin_details$regulation != "None"), "\n", sep = "")
+cat("- P. tuahiniensis: ", sum(ptua_biomin_details$regulation != "None"), "\n", sep = "")
+
+cat("\n")
+cat("=" %>% rep(60) %>% paste(collapse = ""), "\n")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
+

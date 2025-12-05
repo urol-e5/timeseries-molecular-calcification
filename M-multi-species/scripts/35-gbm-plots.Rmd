@@ -65,6 +65,36 @@ peve_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-mo
 ptua_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/ptua_biomin_counts.csv")
 ```
 
+
+## Gene Methylation Histogram
+
+```{r}
+library(tidyverse)
+
+ptua_biomin <- read_csv(
+  "https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/ptua_biomin_counts.csv"
+)
+
+library(tidyverse)
+
+ptua_biomin %>%
+  pivot_longer(cols = matches("^POC-"), values_to = "count") %>%
+  ggplot(aes(x = count)) +
+  geom_histogram() +
+  scale_x_log10() +
+  theme_minimal() +
+  labs(
+    title = "Distribution of Ptua Biomineralization Counts (log scale)",
+    x = "log10(count)",
+    y = "Frequency"
+  )
+```
+
+
+
+
+
+
 ## Data Preview
 
 ```{r preview-data}

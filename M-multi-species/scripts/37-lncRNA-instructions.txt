@@ -1,9 +1,5 @@
 
-
-Plot coeffiecient of expression variation for a given gene for each species and generate a plot that shows the relationship with gene body methylation with coefficient of variation. 
-
-
-Do ths in R. 
+Identify which long non-coding RNAs have significant correlations in expresssion (both positive and negative ) by comparing gene expression count matrices and long non-coding RNA matrices for three species of corals 
 
 Gene expression count matrices 
 
@@ -16,16 +12,16 @@ https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/E-Peve/
 Pocillopora tuahiniensis
 https://gannet.fish.washington.edu/gitrepos/urol-e5/timeseries_molecular/F-Ptua/output/02.20-F-Ptua-RNAseq-alignment-HiSat2/ptua-gene_count_matrix.csv 
  
-Gene Body Methylation 
+long non-coding RNA
 
 Acropora pulchra
-https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/D-Apul/output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv 
+https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/timeseries_molecular/D-Apul/output/31.5-Apul-lncRNA-discovery/lncRNA_counts.clean.filtered.txt
 
 Porites evermanni
-https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/E-Peve/output/15-Peve-Gene-Methylation/Peve-gene-methylation_75pct.tsv 
+https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/timeseries_molecular/E-Peve/output/12-Peve-lncRNA-discovery/lncRNA_counts.clean.filtered.txt
 
 Pocillopora tuahiniensis
-https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/F-Ptua/output/09-Ptua-Gene-Methylation/Ptua-gene-methylation_75pct.tsv
+https://raw.githubusercontent.com/urol-e5/timeseries_molecular/refs/heads/main/F-Ptua/output/06-Ptua-lncRNA-discovery/lncRNA_counts.clean.filtered.txt 
 
 
 

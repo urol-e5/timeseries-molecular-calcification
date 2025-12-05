@@ -1,5 +1,4 @@
 
-
 Plot coeffiecient of expression variation for a given gene for each species and generate a plot that shows the relationship with gene body methylation with coefficient of variation. 
 
 
