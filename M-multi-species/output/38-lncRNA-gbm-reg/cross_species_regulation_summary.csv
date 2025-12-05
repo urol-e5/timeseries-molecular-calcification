@@ -1,0 +1,10 @@
+regulation_type,n_genes,n_biomin,species
+Both,499,14,A. pulchra
+lncRNA_only,30051,488,A. pulchra
+GBM_only,0,0,A. pulchra
+Both,160,5,P. evermanni
+lncRNA_only,31656,529,P. evermanni
+GBM_only,0,0,P. evermanni
+Both,122,1,P. tuahiniensis
+lncRNA_only,26565,479,P. tuahiniensis
+GBM_only,0,0,P. tuahiniensis
