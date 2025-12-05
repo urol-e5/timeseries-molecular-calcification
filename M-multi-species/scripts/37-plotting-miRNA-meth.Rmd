@@ -28,13 +28,24 @@ methylation_mirna,"('OG_08920',
 
 'Peve_00037895')",methylation_CpG_Porites_evermani_scaffold_621_73376,mirna_Cluster_11615,0.4413585132806228,0.4752230866032875,0.6022089646716988,0.03386457332266468,0.12698587806841133,True,,,,NA,0.0031280131352001694
 methylation_mirna,"('OG_06592', 
+
+
+| 1 | ('OG_11813', 'Peve_00021937') | methylation_CpG_Porites_evermani_scaffold_3933_26651 | mirna_Cluster_1004 | 0.028 | 1.523 | False |
+
+
+
+'Peve_00003282')",methylation_CpG_Porites_evermani_scaffold_2468_67964,mirna_Cluster_4968,0.49517256271521937,0.5084960749125962,0.6405817108341498,0.013323512197376819,0.13208563592155365,True,0.8594695256198828,0.32172617274470294,0.5377433528751798,positive,0.0016851843387992727
+methylation_mirna,"('OG_04243', 'Peve_00003282')",methylation_CpG_Porites_evermani_scaffold_9_1086103,mirna_Cluster_4968,0.4949673182269946,0.5099578425794248,0.6510651968738449,0.014990524352430201,0.14110735429442012,True,0.8334351006638587,,,NA,0.001069190601504233
+methylation_mirna,"('OG_04243', 'Peve_00003282')",methylation_CpG_Porites_evermani_scaffold_2042_42068,mirna_Cluster_4968,0.4874468046018934,0.5400480356262451,0.6189286749471542,0.05260123102435177,0.07888063932090905,True,0.7988298910216519,0.2830643510335664,0.5157655399880855,positive,0.014898023689596696
+methylation_mirna,"('OG_04243', 'Peve_00003282')",methylation_CpG_Porites_evermani_scaffold_3494_26092,mirna_Cluster_4968,0.47922451226680995,0.5092387075022629,0.6797440829402398,0.0300141952354529,0.17050537543797695,True,0.9109498733150457,-0.17292843814343797,1.0838783114584838,positive,0.00024440069042364065
+methylation_mirna,"('OG_04243', 'Peve_00003282')",methylation_CpG_Porites_evermani_scaffold_76_563332,mirna_Cluster_4968,0.4757088541307325,0.5001447419265209,0.6148700057162267,0.024435887795788425,0.11472526378970582,True,0.9378340640956038,0.4094715258653537,0.5283625382302501,positive,0.004149749902172872
 ```{r}
 library(tidyverse)
 library(ggplot2)
 
-gene_id <- "Peve_00037895"
-cpg_id  <- "CpG_Porites_evermani_scaffold_621_73376"
-mir_id  <- "Cluster_11615"
+gene_id <- "Peve_00003282"
+cpg_id  <- "CpG_Porites_evermani_scaffold_2468_67964"
+mir_id  <- "Cluster_4968"
 
 ## -----------------------------
 ## GENE EXPRESSION (NO NAME COLLISION)
@@ -98,4 +109,9 @@ ggplot(df, aes(x = Methylation, y = Expression, color = miRNA_state)) +
     color = "miRNA state"
   )
 ```
-
+python code/plot_methylation_mirna_context.py \
+    --results-dir output/context_dependent_analysis_TIMESTAMP \
+    --context-dependent
+    
+    
+    
