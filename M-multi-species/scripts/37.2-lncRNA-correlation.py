@@ -12,6 +12,8 @@ This analysis identifies which long non-coding RNAs (lncRNAs) have significant c
 
 Uses parallel processing for efficient computation of pairwise correlations.
 
+uv run --no-project --with numpy --with pandas --with scipy --with statsmodels --with matplotlib --with tqdm python M-multi-species/scripts/37.2-lncRNA-correlation.py
+
 Author: GitHub Copilot
 Date: 2025-12-04
 """
