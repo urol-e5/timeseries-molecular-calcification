@@ -268,6 +268,70 @@ cat("\nPtua (first 10 rows):\n")
 head(ptua_sample_stats, 10)
 ```
 
+# Create CV Matrices
+
+Create wide-format CV matrices where each row is a gene and each column is a sample.
+Only include genes with >5 exons and mean expression > 0.
+
+```{r cv-matrix-function}
+create_cv_matrix <- function(sample_stats) {
+  # Filter: n_exons > 5 and mean_exon_expr > 0
+  filtered <- sample_stats %>%
+    filter(n_exons > 5, mean_exon_expr > 0)
+  
+  cat("  After filtering: ", nrow(filtered), " rows (", 
+      n_distinct(filtered$gene_id), " genes x ", 
+      n_distinct(filtered$sample_id), " samples)\n")
+  
+  # Pivot to wide format: gene_id as rows, sample_id as columns, cv_exon_expr as values
+  cv_matrix <- filtered %>%
+    select(gene_id, sample_id, cv_exon_expr) %>%
+    pivot_wider(
+      names_from = sample_id,
+      values_from = cv_exon_expr,
+      values_fn = first  # In case of duplicates, take first value
+    )
+  
+  cv_matrix
+}
+```
+
+```{r create-cv-matrices}
+# Create CV matrices for each species
+cat("Creating Apul CV matrix...\n")
+apul_cv_matrix <- create_cv_matrix(apul_sample_stats)
+
+cat("Creating Peve CV matrix...\n")
+peve_cv_matrix <- create_cv_matrix(peve_sample_stats)
+
+cat("Creating Ptua CV matrix...\n")
+ptua_cv_matrix <- create_cv_matrix(ptua_sample_stats)
+
+cat("\nFinal matrix dimensions:\n")
+cat("Apul CV matrix: ", nrow(apul_cv_matrix), " genes x ", ncol(apul_cv_matrix) - 1, " samples\n")
+cat("Peve CV matrix: ", nrow(peve_cv_matrix), " genes x ", ncol(peve_cv_matrix) - 1, " samples\n")
+cat("Ptua CV matrix: ", nrow(ptua_cv_matrix), " genes x ", ncol(ptua_cv_matrix) - 1, " samples\n")
+
+# Verify data is present
+cat("\nVerifying data in matrices:\n")
+cat("Apul non-NA values: ", sum(!is.na(as.matrix(apul_cv_matrix[,-1]))), "\n")
+cat("Peve non-NA values: ", sum(!is.na(as.matrix(peve_cv_matrix[,-1]))), "\n")
+cat("Ptua non-NA values: ", sum(!is.na(as.matrix(ptua_cv_matrix[,-1]))), "\n")
+```
+
+```{r preview-cv-matrices}
+cat("=== CV Matrix Preview ===\n\n")
+
+cat("Apul CV matrix (first 5 rows, first 10 columns):\n")
+head(apul_cv_matrix[, 1:min(10, ncol(apul_cv_matrix))], 5)
+
+cat("\nPeve CV matrix (first 5 rows, first 10 columns):\n")
+head(peve_cv_matrix[, 1:min(10, ncol(peve_cv_matrix))], 5)
+
+cat("\nPtua CV matrix (first 5 rows, first 10 columns):\n")
+head(ptua_cv_matrix[, 1:min(10, ncol(ptua_cv_matrix))], 5)
+```
+
 # Export Data
 
 ```{r export}
@@ -281,9 +345,15 @@ write_csv(apul_exon_all, file.path(output_dir, "apul-sample_exon_counts.csv"))
 write_csv(peve_exon_all, file.path(output_dir, "peve-sample_exon_counts.csv"))
 write_csv(ptua_exon_all, file.path(output_dir, "ptua-sample_exon_counts.csv"))
 
+# Write CV matrices (wide format: genes x samples)
+write_tsv(apul_cv_matrix, file.path(output_dir, "apul-cv_matrix.tsv"))
+write_tsv(peve_cv_matrix, file.path(output_dir, "peve-cv_matrix.tsv"))
+write_tsv(ptua_cv_matrix, file.path(output_dir, "ptua-cv_matrix.tsv"))
+
 cat("\nExported files to:", output_dir, "\n")
 cat("  - *-sample_exon_stats.csv: Per-sample gene-level statistics\n")
 cat("  - *-sample_exon_counts.csv: Raw exon counts per sample\n")
+cat("  - *-cv_matrix.tsv: CV matrix (genes x samples, n_exons > 5 & mean_expr > 0)\n")
 ```
 
 # Session Info

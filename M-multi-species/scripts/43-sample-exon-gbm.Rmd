@@ -1,0 +1,415 @@
+---
+title: "43-sample-exon-gbm"
+author: "Auto-generated"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 12, fig.height = 8)
+
+library(dplyr)
+library(readr)
+library(tidyr)
+library(ggplot2)
+library(here)
+```
+
+# Overview
+
+This notebook plots the coefficient of variation (CV) of exon-level expression against gene body methylation (GBM) **for each individual sample** across three coral species:
+
+- **Acropora pulchra** (Apul)
+- **Porites evermanni** (Peve)
+- **Pocillopora tuahiniensis** (Ptua)
+
+Unlike `41-exon-gbm.Rmd` which uses gene-level averages across samples, this analysis examines the CV-GBM relationship at the sample level (e.g., "ACR-139-TP1").
+
+# Data Paths
+
+```{r paths}
+# Per-sample exon statistics (from 42-sample-exon-count.Rmd)
+sample_stats_dir <- here("M-multi-species/output/42-sample-exon-count")
+
+apul_sample_stats_path <- file.path(sample_stats_dir, "apul-sample_exon_stats.csv")
+peve_sample_stats_path <- file.path(sample_stats_dir, "peve-sample_exon_stats.csv")
+ptua_sample_stats_path <- file.path(sample_stats_dir, "ptua-sample_exon_stats.csv")
+
+# Gene body methylation files (75% coverage threshold)
+apul_gbm_path <- here("D-Apul/output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv")
+peve_gbm_path <- here("E-Peve/output/15-Peve-Gene-Methylation/Peve-gene-methylation_75pct.tsv")
+ptua_gbm_path <- here("F-Ptua/output/09-Ptua-Gene-Methylation/Ptua-gene-methylation_75pct.tsv")
+
+# Output directory
+output_dir <- here("M-multi-species/output/43-sample-exon-gbm")
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+```
+
+# Load Data
+
+## Per-sample exon statistics
+
+```{r load-sample-stats}
+apul_sample_stats <- read_csv(apul_sample_stats_path, show_col_types = FALSE)
+peve_sample_stats <- read_csv(peve_sample_stats_path, show_col_types = FALSE)
+ptua_sample_stats <- read_csv(ptua_sample_stats_path, show_col_types = FALSE)
+
+cat("Apul sample stats:", nrow(apul_sample_stats), "rows,", 
+    n_distinct(apul_sample_stats$sample_id), "samples\n")
+cat("Peve sample stats:", nrow(peve_sample_stats), "rows,", 
+    n_distinct(peve_sample_stats$sample_id), "samples\n")
+cat("Ptua sample stats:", nrow(ptua_sample_stats), "rows,", 
+    n_distinct(ptua_sample_stats$sample_id), "samples\n")
+```
+
+## Gene body methylation (wide format)
+
+```{r load-gbm}
+apul_gbm <- read_tsv(apul_gbm_path, show_col_types = FALSE)
+peve_gbm <- read_tsv(peve_gbm_path, show_col_types = FALSE)
+ptua_gbm <- read_tsv(ptua_gbm_path, show_col_types = FALSE)
+
+cat("Apul GBM:", nrow(apul_gbm), "genes x", ncol(apul_gbm) - 1, "samples\n")
+cat("Peve GBM:", nrow(peve_gbm), "genes x", ncol(peve_gbm) - 1, "samples\n")
+cat("Ptua GBM:", nrow(ptua_gbm), "genes x", ncol(ptua_gbm) - 1, "samples\n")
+```
+
+# Reshape GBM to Long Format
+
+Convert GBM data from wide (gene × samples) to long format (gene × sample × methylation).
+
+```{r reshape-gbm}
+reshape_gbm_long <- function(gbm_df) {
+  sample_cols <- setdiff(names(gbm_df), "gene_id")
+  
+  gbm_df %>%
+    pivot_longer(
+      cols = all_of(sample_cols),
+      names_to = "sample_id",
+      values_to = "gbm"
+    ) %>%
+    filter(!is.na(gbm))
+}
+
+apul_gbm_long <- reshape_gbm_long(apul_gbm)
+peve_gbm_long <- reshape_gbm_long(peve_gbm)
+ptua_gbm_long <- reshape_gbm_long(ptua_gbm)
+
+cat("Apul GBM long:", nrow(apul_gbm_long), "rows\n")
+cat("Peve GBM long:", nrow(peve_gbm_long), "rows\n")
+cat("Ptua GBM long:", nrow(ptua_gbm_long), "rows\n")
+```
+
+# Merge CV and GBM Data
+
+Join per-sample exon CV with per-sample gene body methylation. Filter to genes with >5 exons.
+
+```{r merge-data}
+# Apul
+apul_merged <- apul_sample_stats %>%
+  filter(n_exons > 5) %>%
+  inner_join(apul_gbm_long, by = c("gene_id", "sample_id")) %>%
+  filter(!is.na(cv_exon_expr), !is.na(gbm)) %>%
+  mutate(
+    species = "Acropora pulchra",
+    timepoint = sub(".*-(TP[0-9]+)$", "\\1", sample_id),
+    colony = sub("^(.*)-TP[0-9]+$", "\\1", sample_id)
+  )
+
+# Peve
+peve_merged <- peve_sample_stats %>%
+  filter(n_exons > 5) %>%
+  inner_join(peve_gbm_long, by = c("gene_id", "sample_id")) %>%
+  filter(!is.na(cv_exon_expr), !is.na(gbm)) %>%
+  mutate(
+    species = "Porites evermanni",
+    timepoint = sub(".*-(TP[0-9]+)$", "\\1", sample_id),
+    colony = sub("^(.*)-TP[0-9]+$", "\\1", sample_id)
+  )
+
+# Ptua
+ptua_merged <- ptua_sample_stats %>%
+  filter(n_exons > 5) %>%
+  inner_join(ptua_gbm_long, by = c("gene_id", "sample_id")) %>%
+  filter(!is.na(cv_exon_expr), !is.na(gbm)) %>%
+  mutate(
+    species = "Pocillopora tuahiniensis",
+    timepoint = sub(".*-(TP[0-9]+)$", "\\1", sample_id),
+    colony = sub("^(.*)-TP[0-9]+$", "\\1", sample_id)
+  )
+
+cat("Apul merged:", nrow(apul_merged), "obs,", n_distinct(apul_merged$sample_id), "samples\n")
+cat("Peve merged:", nrow(peve_merged), "obs,", n_distinct(peve_merged$sample_id), "samples\n")
+cat("Ptua merged:", nrow(ptua_merged), "obs,", n_distinct(ptua_merged$sample_id), "samples\n")
+```
+
+# Combined Dataset
+
+```{r combine-data}
+all_samples <- bind_rows(apul_merged, peve_merged, ptua_merged)
+
+# Summary by species and timepoint
+all_samples %>%
+  group_by(species, timepoint) %>%
+  summarise(
+    n_samples = n_distinct(sample_id),
+    n_genes = n_distinct(gene_id),
+    n_obs = n(),
+    .groups = "drop"
+  ) %>%
+  print(n = 20)
+```
+
+# Plots
+
+## All Samples - Faceted by Species
+
+```{r plot-all-species, fig.width=14, fig.height=5}
+ggplot(all_samples, aes(x = gbm, y = cv_exon_expr, color = timepoint)) +
+  geom_point(alpha = 0.1, size = 0.3) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1) +
+  facet_wrap(~species, scales = "free") +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    x = "Gene Body Methylation (%)",
+    y = "Coefficient of Variation (Exon Expression)",
+    title = "Exon Expression CV vs Gene Body Methylation",
+    subtitle = "All samples, colored by timepoint",
+    color = "Timepoint"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(face = "bold", size = 12),
+    legend.position = "bottom"
+  )
+
+ggsave(file.path(output_dir, "cv_vs_gbm_all_samples_by_timepoint.png"), width = 14, height = 5, dpi = 300)
+```
+
+## Per-Sample Faceted Plots
+
+### Acropora pulchra - All Samples
+
+```{r plot-apul-samples, fig.width=16, fig.height=12}
+ggplot(apul_merged, aes(x = gbm, y = cv_exon_expr)) +
+  geom_point(alpha = 0.2, size = 0.3, color = "#E69F00") +
+  geom_smooth(method = "lm", se = TRUE, color = "darkred", linewidth = 0.8) +
+  facet_wrap(~sample_id, ncol = 8) +
+  labs(
+    x = "Gene Body Methylation (%)",
+    y = "CV (Exon Expression)",
+    title = "Acropora pulchra: Exon CV vs GBM per Sample"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 7),
+    axis.text = element_text(size = 6)
+  )
+
+ggsave(file.path(output_dir, "cv_vs_gbm_apul_per_sample.png"), width = 16, height = 12, dpi = 300)
+```
+
+### Porites evermanni - All Samples
+
+```{r plot-peve-samples, fig.width=16, fig.height=12}
+ggplot(peve_merged, aes(x = gbm, y = cv_exon_expr)) +
+  geom_point(alpha = 0.2, size = 0.3, color = "#56B4E9") +
+  geom_smooth(method = "lm", se = TRUE, color = "darkblue", linewidth = 0.8) +
+  facet_wrap(~sample_id, ncol = 8) +
+  labs(
+    x = "Gene Body Methylation (%)",
+    y = "CV (Exon Expression)",
+    title = "Porites evermanni: Exon CV vs GBM per Sample"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 7),
+    axis.text = element_text(size = 6)
+  )
+
+ggsave(file.path(output_dir, "cv_vs_gbm_peve_per_sample.png"), width = 16, height = 12, dpi = 300)
+```
+
+### Pocillopora tuahiniensis - All Samples
+
+```{r plot-ptua-samples, fig.width=16, fig.height=12}
+ggplot(ptua_merged, aes(x = gbm, y = cv_exon_expr)) +
+  geom_point(alpha = 0.2, size = 0.3, color = "#009E73") +
+  geom_smooth(method = "lm", se = TRUE, color = "darkgreen", linewidth = 0.8) +
+  facet_wrap(~sample_id, ncol = 8) +
+  labs(
+    x = "Gene Body Methylation (%)",
+    y = "CV (Exon Expression)",
+    title = "Pocillopora tuahiniensis: Exon CV vs GBM per Sample"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(size = 7),
+    axis.text = element_text(size = 6)
+  )
+
+ggsave(file.path(output_dir, "cv_vs_gbm_ptua_per_sample.png"), width = 16, height = 12, dpi = 300)
+```
+
+## Timepoint Comparison
+
+```{r plot-timepoint-comparison, fig.width=14, fig.height=10}
+ggplot(all_samples, aes(x = gbm, y = cv_exon_expr, color = species)) +
+  geom_point(alpha = 0.05, size = 0.3) +
+  geom_smooth(method = "lm", se = TRUE, linewidth = 1.2) +
+  facet_wrap(~timepoint, ncol = 2) +
+  scale_color_manual(values = c(
+    "Acropora pulchra" = "#E69F00",
+    "Porites evermanni" = "#56B4E9",
+    "Pocillopora tuahiniensis" = "#009E73"
+  )) +
+  labs(
+    x = "Gene Body Methylation (%)",
+    y = "Coefficient of Variation (Exon Expression)",
+    title = "Exon CV vs GBM by Timepoint",
+    subtitle = "Comparing species within each timepoint",
+    color = "Species"
+  ) +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(face = "bold", size = 12),
+    legend.position = "bottom",
+    legend.text = element_text(face = "italic")
+  )
+
+ggsave(file.path(output_dir, "cv_vs_gbm_by_timepoint.png"), width = 14, height = 10, dpi = 300)
+```
+
+## Colony-Level Summary
+
+```{r plot-colony-summary, fig.width=14, fig.height=8}
+# Compute per-colony correlation coefficients
+colony_cors <- all_samples %>%
+  group_by(species, colony) %>%
+  summarise(
+    n_genes = n(),
+    r = cor(cv_exon_expr, gbm, use = "complete.obs"),
+    .groups = "drop"
+  )
+
+ggplot(colony_cors, aes(x = colony, y = r, fill = species)) +
+  geom_col() +
+  facet_wrap(~species, scales = "free_x", ncol = 1) +
+  scale_fill_manual(values = c(
+    "Acropora pulchra" = "#E69F00",
+    "Porites evermanni" = "#56B4E9",
+    "Pocillopora tuahiniensis" = "#009E73"
+  )) +
+  labs(
+    x = "Colony",
+    y = "Correlation (CV vs GBM)",
+    title = "Per-Colony Correlation between Exon CV and Gene Body Methylation"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    legend.position = "none",
+    strip.text = element_text(face = "bold")
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50")
+
+ggsave(file.path(output_dir, "cv_gbm_correlation_by_colony.png"), width = 14, height = 8, dpi = 300)
+```
+
+# Statistical Analysis
+
+## Per-Sample Correlations
+
+```{r sample-correlations}
+sample_cors <- all_samples %>%
+  group_by(species, sample_id, timepoint, colony) %>%
+  summarise(
+    n_genes = n(),
+    r = cor(cv_exon_expr, gbm, use = "complete.obs"),
+    p_value = cor.test(cv_exon_expr, gbm)$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(significant = p_value < 0.05)
+
+# Summary by species
+cat("=== Per-Sample Correlation Summary ===\n\n")
+
+sample_cors %>%
+  group_by(species) %>%
+  summarise(
+    n_samples = n(),
+    mean_r = mean(r, na.rm = TRUE),
+    sd_r = sd(r, na.rm = TRUE),
+    min_r = min(r, na.rm = TRUE),
+    max_r = max(r, na.rm = TRUE),
+    n_significant = sum(significant),
+    pct_significant = mean(significant) * 100
+  ) %>%
+  print()
+```
+
+## Correlation Distribution
+
+```{r plot-correlation-distribution, fig.width=10, fig.height=6}
+ggplot(sample_cors, aes(x = r, fill = species)) +
+  geom_histogram(bins = 20, alpha = 0.7, position = "identity") +
+  facet_wrap(~species, ncol = 1) +
+  scale_fill_manual(values = c(
+    "Acropora pulchra" = "#E69F00",
+    "Porites evermanni" = "#56B4E9",
+    "Pocillopora tuahiniensis" = "#009E73"
+  )) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray30") +
+  labs(
+    x = "Correlation Coefficient (r)",
+    y = "Number of Samples",
+    title = "Distribution of Per-Sample CV-GBM Correlations"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+ggsave(file.path(output_dir, "cv_gbm_correlation_distribution.png"), width = 10, height = 6, dpi = 300)
+```
+
+## Correlation by Timepoint
+
+```{r correlation-by-timepoint}
+cat("\n=== Correlation by Timepoint ===\n\n")
+
+sample_cors %>%
+  group_by(species, timepoint) %>%
+  summarise(
+    n_samples = n(),
+    mean_r = mean(r, na.rm = TRUE),
+    sd_r = sd(r, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(species, timepoint) %>%
+  print(n = 20)
+```
+
+# Export Data
+
+```{r export}
+# Per-sample correlations
+write_csv(sample_cors, file.path(output_dir, "sample_cv_gbm_correlations.csv"))
+
+# Combined merged data
+write_csv(all_samples, file.path(output_dir, "all_samples_cv_gbm.csv"))
+
+# Per-colony correlations
+write_csv(colony_cors, file.path(output_dir, "colony_cv_gbm_correlations.csv"))
+
+cat("\nExported files to:", output_dir, "\n")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```

@@ -1,0 +1,690 @@
+---
+title: "44-exoncov-time"
+author: "Auto-generated"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.width = 12, fig.height = 8)
+
+library(dplyr)
+library(readr)
+library(tidyr)
+library(ggplot2)
+library(here)
+library(broom)
+```
+
+# Overview
+
+This notebook examines how the coefficient of variation (CV) of exon expression and gene body methylation (GBM) **change over time** (TP1 → TP4) for each colony and gene.
+
+Key questions:
+- How does exon expression variability (CV) change across timepoints?
+- How does gene body methylation change across timepoints?
+- Is there a relationship between temporal changes in CV and temporal changes in GBM?
+
+# Data Paths
+
+```{r paths}
+# Per-sample exon statistics (from 42-sample-exon-count.Rmd)
+sample_stats_dir <- here("M-multi-species/output/42-sample-exon-count")
+
+apul_sample_stats_path <- file.path(sample_stats_dir, "apul-sample_exon_stats.csv")
+peve_sample_stats_path <- file.path(sample_stats_dir, "peve-sample_exon_stats.csv")
+ptua_sample_stats_path <- file.path(sample_stats_dir, "ptua-sample_exon_stats.csv")
+
+# Gene body methylation files (75% coverage threshold)
+apul_gbm_path <- here("D-Apul/output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv")
+peve_gbm_path <- here("E-Peve/output/15-Peve-Gene-Methylation/Peve-gene-methylation_75pct.tsv")
+ptua_gbm_path <- here("F-Ptua/output/09-Ptua-Gene-Methylation/Ptua-gene-methylation_75pct.tsv")
+
+# Output directory
+output_dir <- here("M-multi-species/output/44-exoncov-time")
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+```
+
+# Load and Prepare Data
+
+## Load per-sample exon statistics
+
+```{r load-sample-stats}
+apul_sample_stats <- read_csv(apul_sample_stats_path, show_col_types = FALSE)
+peve_sample_stats <- read_csv(peve_sample_stats_path, show_col_types = FALSE)
+ptua_sample_stats <- read_csv(ptua_sample_stats_path, show_col_types = FALSE)
+
+# Extract timepoint and colony from sample_id
+parse_sample_info <- function(df) {
+ df %>%
+    mutate(
+      timepoint = sub(".*-(TP[0-9]+)$", "\\1", sample_id),
+      timepoint_num = as.numeric(sub("TP", "", timepoint)),
+      colony = sub("^(.*)-TP[0-9]+$", "\\1", sample_id)
+    )
+}
+
+apul_sample_stats <- parse_sample_info(apul_sample_stats)
+peve_sample_stats <- parse_sample_info(peve_sample_stats)
+ptua_sample_stats <- parse_sample_info(ptua_sample_stats)
+
+cat("Apul:", n_distinct(apul_sample_stats$colony), "colonies,", 
+    n_distinct(apul_sample_stats$gene_id), "genes\n")
+cat("Peve:", n_distinct(peve_sample_stats$colony), "colonies,", 
+    n_distinct(peve_sample_stats$gene_id), "genes\n")
+cat("Ptua:", n_distinct(ptua_sample_stats$colony), "colonies,", 
+    n_distinct(ptua_sample_stats$gene_id), "genes\n")
+```
+
+## Load and reshape GBM data
+
+```{r load-gbm}
+apul_gbm <- read_tsv(apul_gbm_path, show_col_types = FALSE)
+peve_gbm <- read_tsv(peve_gbm_path, show_col_types = FALSE)
+ptua_gbm <- read_tsv(ptua_gbm_path, show_col_types = FALSE)
+
+# Reshape to long format with timepoint/colony info
+reshape_gbm_long <- function(gbm_df) {
+  sample_cols <- setdiff(names(gbm_df), "gene_id")
+  
+  gbm_df %>%
+    pivot_longer(
+      cols = all_of(sample_cols),
+      names_to = "sample_id",
+      values_to = "gbm"
+    ) %>%
+    filter(!is.na(gbm)) %>%
+    mutate(
+      timepoint = sub(".*-(TP[0-9]+)$", "\\1", sample_id),
+      timepoint_num = as.numeric(sub("TP", "", timepoint)),
+      colony = sub("^(.*)-TP[0-9]+$", "\\1", sample_id)
+    )
+}
+
+apul_gbm_long <- reshape_gbm_long(apul_gbm)
+peve_gbm_long <- reshape_gbm_long(peve_gbm)
+ptua_gbm_long <- reshape_gbm_long(ptua_gbm)
+```
+
+# Merge CV and GBM Data
+
+```{r merge-data}
+merge_cv_gbm <- function(cv_df, gbm_df, species_name) {
+  cv_df %>%
+    filter(n_exons > 5) %>%  # Filter for genes with >5 exons
+    select(sample_id, gene_id, colony, timepoint, timepoint_num, cv_exon_expr, n_exons) %>%
+    inner_join(
+      gbm_df %>% select(sample_id, gene_id, gbm),
+      by = c("sample_id", "gene_id")
+    ) %>%
+    filter(!is.na(cv_exon_expr), !is.na(gbm)) %>%
+    mutate(species = species_name)
+}
+
+apul_merged <- merge_cv_gbm(apul_sample_stats, apul_gbm_long, "Acropora pulchra")
+peve_merged <- merge_cv_gbm(peve_sample_stats, peve_gbm_long, "Porites evermanni")
+ptua_merged <- merge_cv_gbm(ptua_sample_stats, ptua_gbm_long, "Pocillopora tuahiniensis")
+
+all_data <- bind_rows(apul_merged, peve_merged, ptua_merged)
+
+cat("Merged data:\n")
+cat("Apul:", nrow(apul_merged), "observations\n")
+cat("Peve:", nrow(peve_merged), "observations\n")
+cat("Ptua:", nrow(ptua_merged), "observations\n")
+```
+
+# Calculate Temporal Changes
+
+## Compute change from TP1 to TP4 for each colony × gene
+
+```{r compute-temporal-change}
+compute_temporal_change <- function(merged_df) {
+  # Get data for TP1 and TP4 only
+  tp1 <- merged_df %>%
+    filter(timepoint == "TP1") %>%
+    select(colony, gene_id, cv_tp1 = cv_exon_expr, gbm_tp1 = gbm, n_exons)
+  
+  tp4 <- merged_df %>%
+    filter(timepoint == "TP4") %>%
+    select(colony, gene_id, cv_tp4 = cv_exon_expr, gbm_tp4 = gbm)
+  
+  # Join and compute deltas
+  changes <- inner_join(tp1, tp4, by = c("colony", "gene_id")) %>%
+    mutate(
+      delta_cv = cv_tp4 - cv_tp1,
+      delta_gbm = gbm_tp4 - gbm_tp1,
+      pct_change_cv = ifelse(cv_tp1 != 0, (cv_tp4 - cv_tp1) / cv_tp1 * 100, NA),
+      pct_change_gbm = ifelse(gbm_tp1 != 0, (gbm_tp4 - gbm_tp1) / gbm_tp1 * 100, NA)
+    )
+  
+  changes
+}
+
+apul_changes <- compute_temporal_change(apul_merged) %>% mutate(species = "Acropora pulchra")
+peve_changes <- compute_temporal_change(peve_merged) %>% mutate(species = "Porites evermanni")
+ptua_changes <- compute_temporal_change(ptua_merged) %>% mutate(species = "Pocillopora tuahiniensis")
+
+all_changes <- bind_rows(apul_changes, peve_changes, ptua_changes)
+
+cat("\nTemporal changes (TP1 → TP4):\n")
+cat("Apul:", nrow(apul_changes), "colony-gene pairs\n")
+cat("Peve:", nrow(peve_changes), "colony-gene pairs\n")
+cat("Ptua:", nrow(ptua_changes), "colony-gene pairs\n")
+```
+
+## Compute slope over all timepoints
+
+```{r compute-slopes}
+# For each colony × gene, compute linear slope of CV and GBM over time
+compute_slopes <- function(merged_df) {
+  merged_df %>%
+    group_by(colony, gene_id, n_exons) %>%
+    filter(n() >= 3) %>%  # Need at least 3 timepoints
+    summarise(
+      n_timepoints = n(),
+      cv_slope = coef(lm(cv_exon_expr ~ timepoint_num))[2],
+      gbm_slope = coef(lm(gbm ~ timepoint_num))[2],
+      cv_mean = mean(cv_exon_expr, na.rm = TRUE),
+      gbm_mean = mean(gbm, na.rm = TRUE),
+      .groups = "drop"
+    )
+}
+
+apul_slopes <- compute_slopes(apul_merged) %>% mutate(species = "Acropora pulchra")
+peve_slopes <- compute_slopes(peve_merged) %>% mutate(species = "Porites evermanni")
+ptua_slopes <- compute_slopes(ptua_merged) %>% mutate(species = "Pocillopora tuahiniensis")
+
+all_slopes <- bind_rows(apul_slopes, peve_slopes, ptua_slopes)
+
+cat("\nSlopes computed for:\n")
+cat("Apul:", nrow(apul_slopes), "colony-gene pairs\n")
+cat("Peve:", nrow(peve_slopes), "colony-gene pairs\n")
+cat("Ptua:", nrow(ptua_slopes), "colony-gene pairs\n")
+```
+
+# Plots
+
+## Delta CV vs Delta GBM (TP1 → TP4)
+
+```{r plot-delta-all, fig.width=14, fig.height=5}
+ggplot(all_changes, aes(x = delta_gbm, y = delta_cv)) +
+  geom_point(alpha = 0.1, size = 0.3) +
+  geom_smooth(method = "lm", se = TRUE, color = "red", linewidth = 1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  facet_wrap(~species, scales = "free") +
+  labs(
+    x = "Change in Gene Body Methylation (TP4 - TP1)",
+    y = "Change in Exon CV (TP4 - TP1)",
+    title = "Temporal Change in Exon CV vs Temporal Change in GBM",
+    subtitle = "Each point = one gene in one colony"
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(face = "bold", size = 12))
+
+ggsave(file.path(output_dir, "delta_cv_vs_delta_gbm.png"), width = 14, height = 5, dpi = 300)
+```
+
+## CV Slope vs GBM Slope
+
+```{r plot-slopes-all, fig.width=14, fig.height=5}
+ggplot(all_slopes, aes(x = gbm_slope, y = cv_slope)) +
+  geom_point(alpha = 0.1, size = 0.3) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue", linewidth = 1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  facet_wrap(~species, scales = "free") +
+  labs(
+    x = "GBM Slope (change per timepoint)",
+    y = "CV Slope (change per timepoint)",
+    title = "Temporal Slope of Exon CV vs Temporal Slope of GBM",
+    subtitle = "Linear slope across all available timepoints"
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(face = "bold", size = 12))
+
+ggsave(file.path(output_dir, "cv_slope_vs_gbm_slope.png"), width = 14, height = 5, dpi = 300)
+```
+
+## Density Plots of Temporal Changes
+
+```{r plot-density-changes, fig.width=14, fig.height=8}
+# Delta CV distribution
+p1 <- ggplot(all_changes, aes(x = delta_cv, fill = species)) +
+  geom_density(alpha = 0.5) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_fill_manual(values = c(
+    "Acropora pulchra" = "#E69F00",
+    "Porites evermanni" = "#56B4E9",
+    "Pocillopora tuahiniensis" = "#009E73"
+  )) +
+  labs(x = "ΔCV (TP4 - TP1)", y = "Density", title = "Distribution of CV Changes") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+# Delta GBM distribution
+p2 <- ggplot(all_changes, aes(x = delta_gbm, fill = species)) +
+  geom_density(alpha = 0.5) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  scale_fill_manual(values = c(
+    "Acropora pulchra" = "#E69F00",
+    "Porites evermanni" = "#56B4E9",
+    "Pocillopora tuahiniensis" = "#009E73"
+  )) +
+  labs(x = "ΔGBM (TP4 - TP1)", y = "Density", title = "Distribution of GBM Changes") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+library(patchwork)
+p1 + p2
+
+ggsave(file.path(output_dir, "temporal_change_distributions.png"), width = 14, height = 6, dpi = 300)
+```
+
+## Per-Colony Temporal Trajectories
+
+```{r plot-trajectories-apul, fig.width=16, fig.height=10}
+# Sample a subset of genes for visualization
+set.seed(42)
+sample_genes <- apul_merged %>%
+  distinct(gene_id) %>%
+  sample_n(min(100, n())) %>%
+  pull(gene_id)
+
+apul_subset <- apul_merged %>% filter(gene_id %in% sample_genes)
+
+ggplot(apul_subset, aes(x = timepoint_num, y = cv_exon_expr, group = gene_id)) +
+  geom_line(alpha = 0.3, color = "#E69F00") +
+  facet_wrap(~colony, ncol = 5) +
+  labs(
+    x = "Timepoint",
+    y = "Exon CV",
+    title = "Acropora pulchra: Exon CV Trajectories over Time",
+    subtitle = "Each line = one gene (100 genes sampled)"
+  ) +
+  scale_x_continuous(breaks = 1:4, labels = paste0("TP", 1:4)) +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 8))
+
+ggsave(file.path(output_dir, "cv_trajectories_apul.png"), width = 16, height = 10, dpi = 300)
+```
+
+## Hexbin: Delta CV vs Delta GBM
+
+```{r plot-hexbin, fig.width=12, fig.height=10}
+ggplot(all_changes, aes(x = delta_gbm, y = delta_cv)) +
+  geom_hex(bins = 50) +
+  scale_fill_viridis_c(option = "plasma", trans = "log10") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "white") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "white") +
+  geom_smooth(method = "lm", se = TRUE, color = "white", linewidth = 1) +
+  facet_wrap(~species, ncol = 1, scales = "free") +
+  labs(
+    x = "Change in Gene Body Methylation (TP4 - TP1)",
+    y = "Change in Exon CV (TP4 - TP1)",
+    title = "Temporal Changes: Exon CV vs GBM",
+    fill = "Count"
+  ) +
+  theme_minimal() +
+  theme(strip.text = element_text(face = "bold", size = 12))
+
+ggsave(file.path(output_dir, "delta_cv_gbm_hexbin.png"), width = 12, height = 10, dpi = 300)
+```
+
+## Quadrant Analysis
+
+```{r quadrant-analysis, fig.width=12, fig.height=5}
+# Classify genes by direction of change
+all_changes <- all_changes %>%
+  mutate(
+    quadrant = case_when(
+      delta_cv > 0 & delta_gbm > 0 ~ "CV↑ GBM↑",
+      delta_cv > 0 & delta_gbm < 0 ~ "CV↑ GBM↓",
+      delta_cv < 0 & delta_gbm > 0 ~ "CV↓ GBM↑",
+      delta_cv < 0 & delta_gbm < 0 ~ "CV↓ GBM↓",
+      TRUE ~ "No change"
+    )
+  )
+
+quadrant_counts <- all_changes %>%
+  group_by(species, quadrant) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  group_by(species) %>%
+  mutate(pct = n / sum(n) * 100)
+
+ggplot(quadrant_counts, aes(x = quadrant, y = pct, fill = species)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = c(
+    "Acropora pulchra" = "#E69F00",
+    "Porites evermanni" = "#56B4E9",
+    "Pocillopora tuahiniensis" = "#009E73"
+  )) +
+  labs(
+    x = "Direction of Change (TP1 → TP4)",
+    y = "Percentage of Genes",
+    title = "Quadrant Analysis: How CV and GBM Change Together",
+    fill = "Species"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(file.path(output_dir, "quadrant_analysis.png"), width = 12, height = 5, dpi = 300)
+
+# Print counts
+cat("\n=== Quadrant Analysis ===\n")
+print(quadrant_counts, n = 20)
+```
+
+# Statistical Analysis
+
+## Correlation: Delta CV vs Delta GBM
+
+```{r correlation-deltas}
+cat("=== Correlation: ΔCV vs ΔGBM (TP1 → TP4) ===\n\n")
+
+delta_cors <- all_changes %>%
+  group_by(species) %>%
+  summarise(
+    n = n(),
+    r = cor(delta_cv, delta_gbm, use = "complete.obs"),
+    p_value = cor.test(delta_cv, delta_gbm)$p.value,
+    .groups = "drop"
+  )
+
+print(delta_cors)
+```
+
+## Correlation: CV Slope vs GBM Slope
+
+```{r correlation-slopes}
+cat("\n=== Correlation: CV Slope vs GBM Slope ===\n\n")
+
+slope_cors <- all_slopes %>%
+  group_by(species) %>%
+  summarise(
+    n = n(),
+    r = cor(cv_slope, gbm_slope, use = "complete.obs"),
+    p_value = cor.test(cv_slope, gbm_slope)$p.value,
+    .groups = "drop"
+  )
+
+print(slope_cors)
+```
+
+## Per-Colony Correlations
+
+```{r colony-correlations}
+cat("\n=== Per-Colony Correlation: ΔCV vs ΔGBM ===\n\n")
+
+colony_delta_cors <- all_changes %>%
+  group_by(species, colony) %>%
+  summarise(
+    n = n(),
+    r = cor(delta_cv, delta_gbm, use = "complete.obs"),
+    .groups = "drop"
+  )
+
+colony_delta_cors %>%
+  group_by(species) %>%
+  summarise(
+    n_colonies = n(),
+    mean_r = mean(r, na.rm = TRUE),
+    sd_r = sd(r, na.rm = TRUE),
+    min_r = min(r, na.rm = TRUE),
+    max_r = max(r, na.rm = TRUE)
+  ) %>%
+  print()
+```
+
+## Linear Models
+
+```{r linear-models}
+cat("\n=== Linear Models: ΔCV ~ ΔGBM ===\n\n")
+
+for (sp in unique(all_changes$species)) {
+  cat(sp, ":\n")
+  sp_data <- all_changes %>% filter(species == sp)
+  model <- lm(delta_cv ~ delta_gbm, data = sp_data)
+  print(summary(model)$coefficients)
+  cat("  R² =", round(summary(model)$r.squared, 4), "\n\n")
+}
+```
+
+# Summary Statistics
+
+```{r summary-stats}
+cat("=== Summary: Temporal Changes ===\n\n")
+
+all_changes %>%
+  group_by(species) %>%
+  summarise(
+    n_genes = n(),
+    mean_delta_cv = mean(delta_cv, na.rm = TRUE),
+    sd_delta_cv = sd(delta_cv, na.rm = TRUE),
+    mean_delta_gbm = mean(delta_gbm, na.rm = TRUE),
+    sd_delta_gbm = sd(delta_gbm, na.rm = TRUE),
+    pct_cv_increased = mean(delta_cv > 0, na.rm = TRUE) * 100,
+    pct_gbm_increased = mean(delta_gbm > 0, na.rm = TRUE) * 100
+  ) %>%
+  print()
+```
+
+## CV Trajectories by Methylation Level
+
+Plot exon CV across all 4 timepoints for each gene, distinguishing between high methylation (>60%) and low methylation (<5%) genes.
+
+```{r cv-trajectory-by-methylation-apul, fig.width=14, fig.height=10}
+# Calculate mean GBM per gene across timepoints for classification
+apul_gene_gbm <- apul_merged %>%
+  group_by(gene_id) %>%
+  summarise(mean_gbm = mean(gbm, na.rm = TRUE)) %>%
+  mutate(methylation_class = case_when(
+    mean_gbm > 60 ~ "High (>60%)",
+    mean_gbm < 5 ~ "Low (<5%)",
+    TRUE ~ "Intermediate"
+  ))
+
+# Join back to get trajectories
+apul_traj <- apul_merged %>%
+  inner_join(apul_gene_gbm, by = "gene_id") %>%
+  filter(methylation_class %in% c("High (>60%)", "Low (<5%)"))
+
+# Plot CV trajectories colored by methylation class
+ggplot(apul_traj, aes(x = timepoint_num, y = cv_exon_expr, group = gene_id, color = methylation_class)) +
+  geom_line(alpha = 0.15, linewidth = 0.3) +
+  stat_summary(aes(group = methylation_class), fun = median, geom = "line", linewidth = 2) +
+  stat_summary(aes(group = methylation_class), fun = median, geom = "point", size = 3) +
+  facet_wrap(~colony, ncol = 5) +
+  scale_color_manual(values = c("High (>60%)" = "#D55E00", "Low (<5%)" = "#0072B2")) +
+  scale_x_continuous(breaks = 1:4, labels = paste0("TP", 1:4)) +
+  labs(
+    x = "Timepoint",
+    y = "Exon Expression CV",
+    color = "Gene Body Methylation",
+    title = "Acropora pulchra: Exon CV Trajectories by Methylation Level",
+    subtitle = "Thin lines = individual genes; thick lines = median per methylation class"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(size = 9)
+  )
+
+ggsave(file.path(output_dir, "cv_trajectory_by_methylation_apul.png"), width = 14, height = 10, dpi = 300)
+
+# Summary table
+cat("\nAcropora pulchra - Gene counts by methylation class:\n")
+apul_gene_gbm %>% count(methylation_class) %>% print()
+```
+
+```{r cv-trajectory-by-methylation-peve, fig.width=14, fig.height=10}
+# Calculate mean GBM per gene across timepoints for classification
+peve_gene_gbm <- peve_merged %>%
+  group_by(gene_id) %>%
+  summarise(mean_gbm = mean(gbm, na.rm = TRUE)) %>%
+  mutate(methylation_class = case_when(
+    mean_gbm > 60 ~ "High (>60%)",
+    mean_gbm < 5 ~ "Low (<5%)",
+    TRUE ~ "Intermediate"
+  ))
+
+# Join back to get trajectories
+peve_traj <- peve_merged %>%
+  inner_join(peve_gene_gbm, by = "gene_id") %>%
+  filter(methylation_class %in% c("High (>60%)", "Low (<5%)"))
+
+# Plot CV trajectories colored by methylation class
+ggplot(peve_traj, aes(x = timepoint_num, y = cv_exon_expr, group = gene_id, color = methylation_class)) +
+  geom_line(alpha = 0.15, linewidth = 0.3) +
+  stat_summary(aes(group = methylation_class), fun = median, geom = "line", linewidth = 2) +
+  stat_summary(aes(group = methylation_class), fun = median, geom = "point", size = 3) +
+  facet_wrap(~colony, ncol = 5) +
+  scale_color_manual(values = c("High (>60%)" = "#D55E00", "Low (<5%)" = "#0072B2")) +
+  scale_x_continuous(breaks = 1:4, labels = paste0("TP", 1:4)) +
+  labs(
+    x = "Timepoint",
+    y = "Exon Expression CV",
+    color = "Gene Body Methylation",
+    title = "Porites evermanni: Exon CV Trajectories by Methylation Level",
+    subtitle = "Thin lines = individual genes; thick lines = median per methylation class"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(size = 9)
+  )
+
+ggsave(file.path(output_dir, "cv_trajectory_by_methylation_peve.png"), width = 14, height = 10, dpi = 300)
+
+# Summary table
+cat("\nPorites evermanni - Gene counts by methylation class:\n")
+peve_gene_gbm %>% count(methylation_class) %>% print()
+```
+
+```{r cv-trajectory-by-methylation-ptua, fig.width=14, fig.height=10}
+# Calculate mean GBM per gene across timepoints for classification
+ptua_gene_gbm <- ptua_merged %>%
+  group_by(gene_id) %>%
+  summarise(mean_gbm = mean(gbm, na.rm = TRUE)) %>%
+  mutate(methylation_class = case_when(
+    mean_gbm > 60 ~ "High (>60%)",
+    mean_gbm < 5 ~ "Low (<5%)",
+    TRUE ~ "Intermediate"
+  ))
+
+# Join back to get trajectories
+ptua_traj <- ptua_merged %>%
+  inner_join(ptua_gene_gbm, by = "gene_id") %>%
+  filter(methylation_class %in% c("High (>60%)", "Low (<5%)"))
+
+# Plot CV trajectories colored by methylation class
+ggplot(ptua_traj, aes(x = timepoint_num, y = cv_exon_expr, group = gene_id, color = methylation_class)) +
+  geom_line(alpha = 0.15, linewidth = 0.3) +
+  stat_summary(aes(group = methylation_class), fun = median, geom = "line", linewidth = 2) +
+  stat_summary(aes(group = methylation_class), fun = median, geom = "point", size = 3) +
+  facet_wrap(~colony, ncol = 5) +
+  scale_color_manual(values = c("High (>60%)" = "#D55E00", "Low (<5%)" = "#0072B2")) +
+  scale_x_continuous(breaks = 1:4, labels = paste0("TP", 1:4)) +
+  labs(
+    x = "Timepoint",
+    y = "Exon Expression CV",
+    color = "Gene Body Methylation",
+    title = "Pocillopora tuahiniensis: Exon CV Trajectories by Methylation Level",
+    subtitle = "Thin lines = individual genes; thick lines = median per methylation class"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    strip.text = element_text(size = 9)
+  )
+
+ggsave(file.path(output_dir, "cv_trajectory_by_methylation_ptua.png"), width = 14, height = 10, dpi = 300)
+
+# Summary table
+cat("\nPocillopora tuahiniensis - Gene counts by methylation class:\n")
+ptua_gene_gbm %>% count(methylation_class) %>% print()
+```
+
+## Combined Species Plot: CV by Methylation Level
+
+```{r cv-trajectory-combined, fig.width=16, fig.height=6}
+# Combine all species trajectory data
+all_traj <- bind_rows(
+  apul_traj %>% mutate(species = "Apul"),
+  peve_traj %>% mutate(species = "Peve"),
+  ptua_traj %>% mutate(species = "Ptua")
+)
+
+# Aggregate by species x timepoint x methylation class (median CV)
+summary_traj <- all_traj %>%
+  group_by(species, timepoint_num, methylation_class) %>%
+  summarise(
+    median_cv = median(cv_exon_expr, na.rm = TRUE),
+    mean_cv = mean(cv_exon_expr, na.rm = TRUE),
+    sd_cv = sd(cv_exon_expr, na.rm = TRUE),
+    n = n(),
+    se_cv = sd_cv / sqrt(n),
+    .groups = "drop"
+  )
+
+# Plot with error bars
+ggplot(summary_traj, aes(x = timepoint_num, y = median_cv, color = methylation_class)) +
+  geom_line(linewidth = 1.5) +
+  geom_point(size = 4) +
+  geom_errorbar(aes(ymin = median_cv - se_cv, ymax = median_cv + se_cv), width = 0.1) +
+  facet_wrap(~species, scales = "free_y") +
+  scale_color_manual(values = c("High (>60%)" = "#D55E00", "Low (<5%)" = "#0072B2")) +
+  scale_x_continuous(breaks = 1:4, labels = paste0("TP", 1:4)) +
+  labs(
+    x = "Timepoint",
+    y = "Median Exon Expression CV",
+    color = "Gene Body Methylation",
+    title = "Exon CV Trajectories: High vs Low Methylation Genes",
+    subtitle = "Points = median CV ± SE across all genes in each class"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+ggsave(file.path(output_dir, "cv_trajectory_by_methylation_combined.png"), width = 16, height = 6, dpi = 300)
+```
+
+```{r methylation-class-summary}
+# Summary statistics for high vs low methylation genes
+cat("\n=== Summary: CV by Methylation Class ===\n\n")
+
+all_traj %>%
+  group_by(species, methylation_class) %>%
+  summarise(
+    n_observations = n(),
+    n_genes = n_distinct(gene_id),
+    mean_cv = mean(cv_exon_expr, na.rm = TRUE),
+    median_cv = median(cv_exon_expr, na.rm = TRUE),
+    mean_gbm = mean(gbm, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  print()
+```
+
+# Export Data
+
+```{r export}
+write_csv(all_changes, file.path(output_dir, "temporal_changes_tp1_tp4.csv"))
+write_csv(all_slopes, file.path(output_dir, "temporal_slopes.csv"))
+write_csv(delta_cors, file.path(output_dir, "delta_correlations.csv"))
+write_csv(slope_cors, file.path(output_dir, "slope_correlations.csv"))
+write_csv(quadrant_counts, file.path(output_dir, "quadrant_counts.csv"))
+write_csv(colony_delta_cors, file.path(output_dir, "colony_delta_correlations.csv"))
+
+cat("\nExported files to:", output_dir, "\n")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
