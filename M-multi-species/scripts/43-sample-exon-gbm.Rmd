@@ -268,6 +268,7 @@ ggplot(all_samples, aes(x = gbm, y = cv_exon_expr, color = species)) +
     "Porites evermanni" = "#56B4E9",
     "Pocillopora tuahiniensis" = "#009E73"
   )) +
+scale_y_continuous(limits = c(0, 5)) +   # << added line
   labs(
     x = "Gene Body Methylation (%)",
     y = "Coefficient of Variation (Exon Expression)",

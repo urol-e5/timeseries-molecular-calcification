@@ -1,0 +1,936 @@
+---
+title: "45-exon-mCpG"
+author: "Auto-generated"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = TRUE, warning = TRUE)
+
+library(dplyr)
+library(readr)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(here)
+```
+
+# Overview
+
+This notebook examines the relationship between local CpG methylation and exon-level expression. For each exon, we identify CpG sites that fall within the exon coordinates and compute correlations between methylation levels and exon expression across samples.
+
+## Data Sources
+
+### Exon Expression Matrices
+- Apul: `https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/timeseries-molecular-calcification/M-multi-species/output/40-exon-count-matrix/apul-exon_gene_count_matrix.csv`
+- Peve: `https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/timeseries-molecular-calcification/M-multi-species/output/40-exon-count-matrix/peve-exon_gene_count_matrix.csv`
+- Ptua: `https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/timeseries-molecular-calcification/M-multi-species/output/40-exon-count-matrix/ptua-exon_gene_count_matrix.csv`
+
+### mCpG Methylation Data
+- Apul: `https://gannet.fish.washington.edu/metacarcinus/E5/20250903_meth_Apul/merged-WGBS-CpG-counts_filtered_n20.csv`
+- Peve: `https://gannet.fish.washington.edu/metacarcinus/E5/Pevermanni/20250821_meth_Peve/merged-WGBS-CpG-counts_filtered_n20.csv`
+- Ptua: `https://gannet.fish.washington.edu/metacarcinus/E5/Ptuahiniensis/20250821_meth_Ptua/merged-WGBS-CpG-counts_filtered_n20.csv`
+
+## CpG ID Parsing
+
+CpG IDs encode chromosome and position:
+- **Apul**: `CpG_ntLink_0_90500` → chr = `ntLink_0`, pos = `90500`
+- **Peve**: `CpG_Porites_evermani_scaffold_1000_100536` → chr = `Porites_evermani_scaffold_1000`, pos = `100536`
+- **Ptua**: `CpG_Pocillopora_meandrina_HIv1___Sc0000000_1000005` → chr = `Pocillopora_meandrina_HIv1___Sc0000000`, pos = `1000005`
+
+```{r output-dir}
+output_dir <- here("M-multi-species/output/45-exon-mCpG")
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+```
+
+# Helper Functions
+
+## Parse CpG ID to extract chromosome and position
+
+```{r helper-parse-cpg}
+# Parse CpG IDs to extract chromosome and position
+# Pattern: CpG_{chromosome}_{position} where position is the last numeric segment
+parse_cpg_id <- function(cpg_id) {
+  # Remove "CpG_" prefix
+  stripped <- str_remove(cpg_id, "^CpG_")
+  
+  # The position is the last underscore-separated segment (always numeric)
+  # The chromosome is everything before that
+  parts <- str_match(stripped, "^(.+)_([0-9]+)$")
+  
+  tibble(
+    cpg_id = cpg_id,
+    cpg_chr = parts[, 2],
+    cpg_pos = as.numeric(parts[, 3])
+  )
+}
+
+# Vectorized version for efficiency
+parse_cpg_ids <- function(cpg_ids) {
+  stripped <- str_remove(cpg_ids, "^CpG_")
+  parts <- str_match(stripped, "^(.+)_([0-9]+)$")
+  
+  tibble(
+    cpg_id = cpg_ids,
+    cpg_chr = parts[, 2],
+    cpg_pos = as.numeric(parts[, 3])
+  )
+}
+```
+
+## Find CpGs within exon coordinates
+
+```{r helper-find-cpgs-in-exons}
+# For each exon, find CpG sites that fall within its coordinates
+# Returns a tibble mapping exon_id to cpg_ids
+find_cpgs_in_exons <- function(exon_coords, cpg_coords) {
+  # exon_coords: tibble with gene_id, e_id, chr, start, end
+
+# cpg_coords: tibble with cpg_id, cpg_chr, cpg_pos
+  
+  # Join on chromosome and filter by position within exon
+  exon_cpg_map <- exon_coords %>%
+    inner_join(cpg_coords, by = c("chr" = "cpg_chr")) %>%
+    filter(cpg_pos >= start & cpg_pos <= end) %>%
+    select(gene_id, e_id, chr, start, end, cpg_id, cpg_pos)
+  
+  exon_cpg_map
+}
+```
+
+## Compute correlation between exon expression and CpG methylation
+
+```{r helper-compute-correlation}
+# Compute correlation between exon expression and CpG methylation
+# for matched samples
+compute_exon_cpg_correlation <- function(exon_expr, cpg_meth, exon_cpg_map, sample_cols) {
+  # exon_expr: exon expression matrix with sample columns
+  # cpg_meth: CpG methylation matrix with sample columns
+  # exon_cpg_map: mapping of exons to CpGs within them
+  # sample_cols: vector of sample column names present in both datasets
+  
+  results <- list()
+  
+  # Get unique exon-CpG pairs
+  pairs <- exon_cpg_map %>%
+    distinct(gene_id, e_id, cpg_id, chr, start, end, cpg_pos)
+  
+  if (nrow(pairs) == 0) {
+    return(tibble())
+  }
+  
+  # For each pair, compute correlation
+  for (i in seq_len(nrow(pairs))) {
+    pair <- pairs[i, ]
+    
+    # Get exon expression values
+    exon_row <- exon_expr %>%
+      filter(gene_id == pair$gene_id, e_id == pair$e_id)
+    
+    if (nrow(exon_row) == 0) next
+    
+    # Get CpG methylation values
+    cpg_row <- cpg_meth %>%
+      filter(CpG == pair$cpg_id)
+    
+    if (nrow(cpg_row) == 0) next
+    
+    # Extract values for common samples
+    exon_vals <- as.numeric(exon_row[1, sample_cols])
+    cpg_vals <- as.numeric(cpg_row[1, sample_cols])
+    
+    # Remove pairs with NA
+    valid_idx <- !is.na(exon_vals) & !is.na(cpg_vals)
+    exon_vals <- exon_vals[valid_idx]
+    cpg_vals <- cpg_vals[valid_idx]
+    
+    # Need at least 5 samples for meaningful correlation
+    if (length(exon_vals) < 5) next
+    
+    # Compute correlation
+    cor_result <- tryCatch({
+      cor.test(exon_vals, cpg_vals, method = "spearman")
+    }, error = function(e) NULL)
+    
+    if (!is.null(cor_result)) {
+      results[[length(results) + 1]] <- tibble(
+        gene_id = pair$gene_id,
+        e_id = pair$e_id,
+        chr = pair$chr,
+        exon_start = pair$start,
+        exon_end = pair$end,
+        cpg_id = pair$cpg_id,
+        cpg_pos = pair$cpg_pos,
+        n_samples = length(exon_vals),
+        correlation = cor_result$estimate,
+        p_value = cor_result$p.value
+      )
+    }
+  }
+  
+  if (length(results) == 0) {
+    return(tibble())
+  }
+  
+  bind_rows(results)
+}
+```
+
+## Faster vectorized correlation computation
+
+```{r helper-compute-correlation-fast}
+# Faster version using matrix operations
+compute_exon_cpg_correlation_fast <- function(exon_expr, cpg_meth, exon_cpg_map, sample_cols) {
+  
+  # Get unique exon-CpG pairs
+  pairs <- exon_cpg_map %>%
+    distinct(gene_id, e_id, cpg_id, chr, start, end, cpg_pos)
+  
+  if (nrow(pairs) == 0) {
+    return(tibble())
+  }
+  
+  # Create unique exon key
+  pairs <- pairs %>%
+    mutate(exon_key = paste(gene_id, e_id, sep = "_"))
+  
+  exon_expr <- exon_expr %>%
+    mutate(exon_key = paste(gene_id, e_id, sep = "_"))
+  
+  results <- vector("list", nrow(pairs))
+  
+  for (i in seq_len(nrow(pairs))) {
+    pair <- pairs[i, ]
+    
+    # Get exon expression values
+    exon_row <- exon_expr %>%
+      filter(exon_key == pair$exon_key)
+    
+    if (nrow(exon_row) == 0) next
+    
+    # Get CpG methylation values  
+    cpg_row <- cpg_meth %>%
+      filter(CpG == pair$cpg_id)
+    
+    if (nrow(cpg_row) == 0) next
+    
+    # Extract values for common samples
+    exon_vals <- as.numeric(exon_row[1, sample_cols])
+    cpg_vals <- as.numeric(cpg_row[1, sample_cols])
+    
+    # Remove pairs with NA
+    valid_idx <- !is.na(exon_vals) & !is.na(cpg_vals)
+    n_valid <- sum(valid_idx)
+    
+    # Need at least 5 samples for meaningful correlation
+    if (n_valid < 5) next
+    
+    exon_vals_clean <- exon_vals[valid_idx]
+    cpg_vals_clean <- cpg_vals[valid_idx]
+    
+    # Compute Spearman correlation
+    cor_result <- tryCatch({
+      cor.test(exon_vals_clean, cpg_vals_clean, method = "spearman")
+    }, error = function(e) NULL)
+    
+    if (!is.null(cor_result)) {
+      results[[i]] <- tibble(
+        gene_id = pair$gene_id,
+        e_id = pair$e_id,
+        chr = pair$chr,
+        exon_start = pair$start,
+        exon_end = pair$end,
+        cpg_id = pair$cpg_id,
+        cpg_pos = pair$cpg_pos,
+        n_samples = n_valid,
+        correlation = as.numeric(cor_result$estimate),
+        p_value = cor_result$p.value
+      )
+    }
+  }
+  
+  bind_rows(results)
+}
+```
+
+# Acropora pulchra (Apul)
+
+## Load Data
+
+```{r load-apul-data}
+# Load exon expression matrix
+apul_exon <- read_csv(
+  "https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/timeseries-molecular-calcification/M-multi-species/output/40-exon-count-matrix/apul-exon_gene_count_matrix.csv",
+  show_col_types = FALSE
+)
+
+# Load CpG methylation data
+apul_cpg <- read_csv(
+  "https://gannet.fish.washington.edu/metacarcinus/E5/20250903_meth_Apul/merged-WGBS-CpG-counts_filtered_n20.csv",
+  show_col_types = FALSE
+)
+
+cat("Apul exon matrix:", nrow(apul_exon), "exons x", ncol(apul_exon) - 6, "samples\n")
+cat("Apul CpG matrix:", nrow(apul_cpg), "CpGs x", ncol(apul_cpg) - 1, "samples\n")
+```
+
+## Parse CpG Coordinates
+
+```{r parse-apul-cpg}
+# Parse CpG IDs to get chromosome and position
+apul_cpg_coords <- parse_cpg_ids(apul_cpg$CpG)
+
+# Show distribution by chromosome
+apul_cpg_coords %>%
+  count(cpg_chr, name = "n_cpgs") %>%
+  arrange(desc(n_cpgs)) %>%
+  head(20)
+```
+
+## Find CpGs Within Exons
+
+```{r find-apul-cpgs-in-exons}
+# Extract exon coordinates
+apul_exon_coords <- apul_exon %>%
+  select(gene_id, e_id, chr, strand, start, end)
+
+# Find CpGs that fall within exons
+apul_exon_cpg_map <- find_cpgs_in_exons(apul_exon_coords, apul_cpg_coords)
+
+cat("Found", nrow(apul_exon_cpg_map), "exon-CpG pairs\n")
+cat("Unique exons with CpGs:", n_distinct(paste(apul_exon_cpg_map$gene_id, apul_exon_cpg_map$e_id)), "\n")
+cat("Unique CpGs in exons:", n_distinct(apul_exon_cpg_map$cpg_id), "\n")
+
+# Summary: CpGs per exon
+apul_exon_cpg_map %>%
+  count(gene_id, e_id, name = "n_cpgs") %>%
+  summarise(
+    mean_cpgs_per_exon = mean(n_cpgs),
+    median_cpgs_per_exon = median(n_cpgs),
+    max_cpgs_per_exon = max(n_cpgs)
+  )
+```
+
+## Identify Common Samples
+
+```{r apul-common-samples}
+# Get sample columns from exon data (columns 7 onwards)
+apul_exon_samples <- colnames(apul_exon)[7:ncol(apul_exon)]
+
+# Get sample columns from CpG data (columns 2 onwards)
+apul_cpg_samples <- colnames(apul_cpg)[2:ncol(apul_cpg)]
+
+# Find common samples
+apul_common_samples <- intersect(apul_exon_samples, apul_cpg_samples)
+
+cat("Exon samples:", length(apul_exon_samples), "\n")
+cat("CpG samples:", length(apul_cpg_samples), "\n")
+cat("Common samples:", length(apul_common_samples), "\n")
+```
+
+## Compute Correlations
+
+```{r compute-apul-correlations}
+# Compute correlations between exon expression and CpG methylation
+apul_correlations <- compute_exon_cpg_correlation_fast(
+  exon_expr = apul_exon,
+  cpg_meth = apul_cpg,
+  exon_cpg_map = apul_exon_cpg_map,
+  sample_cols = apul_common_samples
+)
+
+cat("Computed", nrow(apul_correlations), "correlations\n")
+
+# Add adjusted p-values
+if (nrow(apul_correlations) > 0) {
+  apul_correlations <- apul_correlations %>%
+    mutate(p_adj = p.adjust(p_value, method = "BH"))
+}
+```
+
+## Summarize Results
+
+```{r summarize-apul-results}
+if (nrow(apul_correlations) > 0) {
+  # Summary statistics
+  cat("\n=== Apul Correlation Summary ===\n")
+  cat("Total exon-CpG pairs tested:", nrow(apul_correlations), "\n")
+  cat("Significant (p < 0.05):", sum(apul_correlations$p_value < 0.05), "\n")
+  cat("Significant (FDR < 0.1):", sum(apul_correlations$p_adj < 0.1), "\n")
+  
+  # Direction of correlations
+  cat("\nCorrelation direction:\n")
+  cat("Positive correlations:", sum(apul_correlations$correlation > 0), "\n")
+  cat("Negative correlations:", sum(apul_correlations$correlation < 0), "\n")
+  
+  # Significant correlations breakdown
+  sig <- apul_correlations %>% filter(p_adj < 0.1)
+  if (nrow(sig) > 0) {
+    cat("\nSignificant correlations (FDR < 0.1):\n")
+    cat("Positive:", sum(sig$correlation > 0), "\n")
+    cat("Negative:", sum(sig$correlation < 0), "\n")
+  }
+  
+  # Distribution of correlation coefficients
+  print(summary(apul_correlations$correlation))
+  
+  # Save results
+  write_csv(apul_correlations, file.path(output_dir, "apul_exon_cpg_correlations.csv"))
+}
+```
+
+## Visualization
+
+```{r plot-apul-correlations, fig.width=10, fig.height=6}
+if (nrow(apul_correlations) > 0) {
+  # Histogram of correlations
+  p1 <- ggplot(apul_correlations, aes(x = correlation)) +
+    geom_histogram(bins = 50, fill = "steelblue", color = "white") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+    labs(
+      title = "Apul: Distribution of Exon-CpG Correlations",
+      x = "Spearman Correlation",
+      y = "Count"
+    ) +
+    theme_minimal()
+  
+  print(p1)
+  
+  # Volcano plot
+  p2 <- ggplot(apul_correlations, aes(x = correlation, y = -log10(p_value))) +
+    geom_point(aes(color = p_adj < 0.1), alpha = 0.5, size = 1) +
+    scale_color_manual(values = c("grey50", "red"), name = "FDR < 0.1") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "blue") +
+    labs(
+      title = "Apul: Volcano Plot of Exon-CpG Correlations",
+      x = "Spearman Correlation",
+      y = "-log10(p-value)"
+    ) +
+    theme_minimal()
+  
+  print(p2)
+}
+```
+
+## Top Correlations
+
+```{r apul-top-correlations}
+if (nrow(apul_correlations) > 0) {
+  # Top positive correlations
+  cat("\n=== Top 20 Positive Correlations (Apul) ===\n")
+  apul_correlations %>%
+    filter(correlation > 0) %>%
+    arrange(p_adj, desc(correlation)) %>%
+    head(20) %>%
+    print()
+  
+  # Top negative correlations
+  cat("\n=== Top 20 Negative Correlations (Apul) ===\n")
+  apul_correlations %>%
+    filter(correlation < 0) %>%
+    arrange(p_adj, correlation) %>%
+    head(20) %>%
+    print()
+}
+```
+
+# Porites evermanni (Peve)
+
+## Load Data
+
+```{r load-peve-data}
+# Load exon expression matrix
+peve_exon <- read_csv(
+  "https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/timeseries-molecular-calcification/M-multi-species/output/40-exon-count-matrix/peve-exon_gene_count_matrix.csv",
+  show_col_types = FALSE
+)
+
+# Load CpG methylation data
+peve_cpg <- read_csv(
+  "https://gannet.fish.washington.edu/metacarcinus/E5/Pevermanni/20250821_meth_Peve/merged-WGBS-CpG-counts_filtered_n20.csv",
+  show_col_types = FALSE
+)
+
+cat("Peve exon matrix:", nrow(peve_exon), "exons x", ncol(peve_exon) - 6, "samples\n")
+cat("Peve CpG matrix:", nrow(peve_cpg), "CpGs x", ncol(peve_cpg) - 1, "samples\n")
+```
+
+## Parse CpG Coordinates
+
+```{r parse-peve-cpg}
+# Parse CpG IDs to get chromosome and position
+peve_cpg_coords <- parse_cpg_ids(peve_cpg$CpG)
+
+# Show distribution by chromosome
+peve_cpg_coords %>%
+  count(cpg_chr, name = "n_cpgs") %>%
+  arrange(desc(n_cpgs)) %>%
+  head(20)
+```
+
+## Find CpGs Within Exons
+
+```{r find-peve-cpgs-in-exons}
+# Extract exon coordinates
+peve_exon_coords <- peve_exon %>%
+  select(gene_id, e_id, chr, strand, start, end)
+
+# Find CpGs that fall within exons
+peve_exon_cpg_map <- find_cpgs_in_exons(peve_exon_coords, peve_cpg_coords)
+
+cat("Found", nrow(peve_exon_cpg_map), "exon-CpG pairs\n")
+cat("Unique exons with CpGs:", n_distinct(paste(peve_exon_cpg_map$gene_id, peve_exon_cpg_map$e_id)), "\n")
+cat("Unique CpGs in exons:", n_distinct(peve_exon_cpg_map$cpg_id), "\n")
+
+# Summary: CpGs per exon
+peve_exon_cpg_map %>%
+  count(gene_id, e_id, name = "n_cpgs") %>%
+  summarise(
+    mean_cpgs_per_exon = mean(n_cpgs),
+    median_cpgs_per_exon = median(n_cpgs),
+    max_cpgs_per_exon = max(n_cpgs)
+  )
+```
+
+## Identify Common Samples
+
+```{r peve-common-samples}
+# Get sample columns from exon data (columns 7 onwards)
+peve_exon_samples <- colnames(peve_exon)[7:ncol(peve_exon)]
+
+# Get sample columns from CpG data (columns 2 onwards)
+peve_cpg_samples <- colnames(peve_cpg)[2:ncol(peve_cpg)]
+
+# Find common samples
+peve_common_samples <- intersect(peve_exon_samples, peve_cpg_samples)
+
+cat("Exon samples:", length(peve_exon_samples), "\n")
+cat("CpG samples:", length(peve_cpg_samples), "\n")
+cat("Common samples:", length(peve_common_samples), "\n")
+```
+
+## Compute Correlations
+
+```{r compute-peve-correlations}
+# Compute correlations between exon expression and CpG methylation
+peve_correlations <- compute_exon_cpg_correlation_fast(
+  exon_expr = peve_exon,
+  cpg_meth = peve_cpg,
+  exon_cpg_map = peve_exon_cpg_map,
+  sample_cols = peve_common_samples
+)
+
+cat("Computed", nrow(peve_correlations), "correlations\n")
+
+# Add adjusted p-values
+if (nrow(peve_correlations) > 0) {
+  peve_correlations <- peve_correlations %>%
+    mutate(p_adj = p.adjust(p_value, method = "BH"))
+}
+```
+
+## Summarize Results
+
+```{r summarize-peve-results}
+if (nrow(peve_correlations) > 0) {
+  # Summary statistics
+  cat("\n=== Peve Correlation Summary ===\n")
+  cat("Total exon-CpG pairs tested:", nrow(peve_correlations), "\n")
+  cat("Significant (p < 0.05):", sum(peve_correlations$p_value < 0.05), "\n")
+  cat("Significant (FDR < 0.1):", sum(peve_correlations$p_adj < 0.1), "\n")
+  
+  # Direction of correlations
+  cat("\nCorrelation direction:\n")
+  cat("Positive correlations:", sum(peve_correlations$correlation > 0), "\n")
+  cat("Negative correlations:", sum(peve_correlations$correlation < 0), "\n")
+  
+  # Significant correlations breakdown
+  sig <- peve_correlations %>% filter(p_adj < 0.1)
+  if (nrow(sig) > 0) {
+    cat("\nSignificant correlations (FDR < 0.1):\n")
+    cat("Positive:", sum(sig$correlation > 0), "\n")
+    cat("Negative:", sum(sig$correlation < 0), "\n")
+  }
+  
+  # Distribution of correlation coefficients
+  print(summary(peve_correlations$correlation))
+  
+  # Save results
+  write_csv(peve_correlations, file.path(output_dir, "peve_exon_cpg_correlations.csv"))
+}
+```
+
+## Visualization
+
+```{r plot-peve-correlations, fig.width=10, fig.height=6}
+if (nrow(peve_correlations) > 0) {
+  # Histogram of correlations
+  p1 <- ggplot(peve_correlations, aes(x = correlation)) +
+    geom_histogram(bins = 50, fill = "coral", color = "white") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+    labs(
+      title = "Peve: Distribution of Exon-CpG Correlations",
+      x = "Spearman Correlation",
+      y = "Count"
+    ) +
+    theme_minimal()
+  
+  print(p1)
+  
+  # Volcano plot
+  p2 <- ggplot(peve_correlations, aes(x = correlation, y = -log10(p_value))) +
+    geom_point(aes(color = p_adj < 0.1), alpha = 0.5, size = 1) +
+    scale_color_manual(values = c("grey50", "red"), name = "FDR < 0.1") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "blue") +
+    labs(
+      title = "Peve: Volcano Plot of Exon-CpG Correlations",
+      x = "Spearman Correlation",
+      y = "-log10(p-value)"
+    ) +
+    theme_minimal()
+  
+  print(p2)
+}
+```
+
+## Top Correlations
+
+```{r peve-top-correlations}
+if (nrow(peve_correlations) > 0) {
+  # Top positive correlations
+  cat("\n=== Top 20 Positive Correlations (Peve) ===\n")
+  peve_correlations %>%
+    filter(correlation > 0) %>%
+    arrange(p_adj, desc(correlation)) %>%
+    head(20) %>%
+    print()
+  
+  # Top negative correlations
+  cat("\n=== Top 20 Negative Correlations (Peve) ===\n")
+  peve_correlations %>%
+    filter(correlation < 0) %>%
+    arrange(p_adj, correlation) %>%
+    head(20) %>%
+    print()
+}
+```
+
+# Pocillopora tuahiniensis (Ptua)
+
+## Load Data
+
+```{r load-ptua-data}
+# Load exon expression matrix
+ptua_exon <- read_csv(
+  "https://gannet.fish.washington.edu/v1_web/owlshell/bu-github/timeseries-molecular-calcification/M-multi-species/output/40-exon-count-matrix/ptua-exon_gene_count_matrix.csv",
+  show_col_types = FALSE
+)
+
+# Load CpG methylation data
+ptua_cpg <- read_csv(
+  "https://gannet.fish.washington.edu/metacarcinus/E5/Ptuahiniensis/20250821_meth_Ptua/merged-WGBS-CpG-counts_filtered_n20.csv",
+  show_col_types = FALSE
+)
+
+cat("Ptua exon matrix:", nrow(ptua_exon), "exons x", ncol(ptua_exon) - 6, "samples\n")
+cat("Ptua CpG matrix:", nrow(ptua_cpg), "CpGs x", ncol(ptua_cpg) - 1, "samples\n")
+```
+
+## Parse CpG Coordinates
+
+```{r parse-ptua-cpg}
+# Parse CpG IDs to get chromosome and position
+ptua_cpg_coords <- parse_cpg_ids(ptua_cpg$CpG)
+
+# Show distribution by chromosome
+ptua_cpg_coords %>%
+  count(cpg_chr, name = "n_cpgs") %>%
+  arrange(desc(n_cpgs)) %>%
+  head(20)
+```
+
+## Find CpGs Within Exons
+
+```{r find-ptua-cpgs-in-exons}
+# Extract exon coordinates
+ptua_exon_coords <- ptua_exon %>%
+  select(gene_id, e_id, chr, strand, start, end)
+
+# Find CpGs that fall within exons
+ptua_exon_cpg_map <- find_cpgs_in_exons(ptua_exon_coords, ptua_cpg_coords)
+
+cat("Found", nrow(ptua_exon_cpg_map), "exon-CpG pairs\n")
+cat("Unique exons with CpGs:", n_distinct(paste(ptua_exon_cpg_map$gene_id, ptua_exon_cpg_map$e_id)), "\n")
+cat("Unique CpGs in exons:", n_distinct(ptua_exon_cpg_map$cpg_id), "\n")
+
+# Summary: CpGs per exon
+ptua_exon_cpg_map %>%
+  count(gene_id, e_id, name = "n_cpgs") %>%
+  summarise(
+    mean_cpgs_per_exon = mean(n_cpgs),
+    median_cpgs_per_exon = median(n_cpgs),
+    max_cpgs_per_exon = max(n_cpgs)
+  )
+```
+
+## Identify Common Samples
+
+```{r ptua-common-samples}
+# Get sample columns from exon data (columns 7 onwards)
+ptua_exon_samples <- colnames(ptua_exon)[7:ncol(ptua_exon)]
+
+# Get sample columns from CpG data (columns 2 onwards)
+ptua_cpg_samples <- colnames(ptua_cpg)[2:ncol(ptua_cpg)]
+
+# Find common samples
+ptua_common_samples <- intersect(ptua_exon_samples, ptua_cpg_samples)
+
+cat("Exon samples:", length(ptua_exon_samples), "\n")
+cat("CpG samples:", length(ptua_cpg_samples), "\n")
+cat("Common samples:", length(ptua_common_samples), "\n")
+```
+
+## Compute Correlations
+
+```{r compute-ptua-correlations}
+# Compute correlations between exon expression and CpG methylation
+ptua_correlations <- compute_exon_cpg_correlation_fast(
+  exon_expr = ptua_exon,
+  cpg_meth = ptua_cpg,
+  exon_cpg_map = ptua_exon_cpg_map,
+  sample_cols = ptua_common_samples
+)
+
+cat("Computed", nrow(ptua_correlations), "correlations\n")
+
+# Add adjusted p-values
+if (nrow(ptua_correlations) > 0) {
+  ptua_correlations <- ptua_correlations %>%
+    mutate(p_adj = p.adjust(p_value, method = "BH"))
+}
+```
+
+## Summarize Results
+
+```{r summarize-ptua-results}
+if (nrow(ptua_correlations) > 0) {
+  # Summary statistics
+  cat("\n=== Ptua Correlation Summary ===\n")
+  cat("Total exon-CpG pairs tested:", nrow(ptua_correlations), "\n")
+  cat("Significant (p < 0.05):", sum(ptua_correlations$p_value < 0.05), "\n")
+  cat("Significant (FDR < 0.1):", sum(ptua_correlations$p_adj < 0.1), "\n")
+  
+  # Direction of correlations
+  cat("\nCorrelation direction:\n")
+  cat("Positive correlations:", sum(ptua_correlations$correlation > 0), "\n")
+  cat("Negative correlations:", sum(ptua_correlations$correlation < 0), "\n")
+  
+  # Significant correlations breakdown
+  sig <- ptua_correlations %>% filter(p_adj < 0.1)
+  if (nrow(sig) > 0) {
+    cat("\nSignificant correlations (FDR < 0.1):\n")
+    cat("Positive:", sum(sig$correlation > 0), "\n")
+    cat("Negative:", sum(sig$correlation < 0), "\n")
+  }
+  
+  # Distribution of correlation coefficients
+  print(summary(ptua_correlations$correlation))
+  
+  # Save results
+  write_csv(ptua_correlations, file.path(output_dir, "ptua_exon_cpg_correlations.csv"))
+}
+```
+
+## Visualization
+
+```{r plot-ptua-correlations, fig.width=10, fig.height=6}
+if (nrow(ptua_correlations) > 0) {
+  # Histogram of correlations
+  p1 <- ggplot(ptua_correlations, aes(x = correlation)) +
+    geom_histogram(bins = 50, fill = "seagreen", color = "white") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+    labs(
+      title = "Ptua: Distribution of Exon-CpG Correlations",
+      x = "Spearman Correlation",
+      y = "Count"
+    ) +
+    theme_minimal()
+  
+  print(p1)
+  
+  # Volcano plot
+  p2 <- ggplot(ptua_correlations, aes(x = correlation, y = -log10(p_value))) +
+    geom_point(aes(color = p_adj < 0.1), alpha = 0.5, size = 1) +
+    scale_color_manual(values = c("grey50", "red"), name = "FDR < 0.1") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "blue") +
+    labs(
+      title = "Ptua: Volcano Plot of Exon-CpG Correlations",
+      x = "Spearman Correlation",
+      y = "-log10(p-value)"
+    ) +
+    theme_minimal()
+  
+  print(p2)
+}
+```
+
+## Top Correlations
+
+```{r ptua-top-correlations}
+if (nrow(ptua_correlations) > 0) {
+  # Top positive correlations
+  cat("\n=== Top 20 Positive Correlations (Ptua) ===\n")
+  ptua_correlations %>%
+    filter(correlation > 0) %>%
+    arrange(p_adj, desc(correlation)) %>%
+    head(20) %>%
+    print()
+  
+  # Top negative correlations
+  cat("\n=== Top 20 Negative Correlations (Ptua) ===\n")
+  ptua_correlations %>%
+    filter(correlation < 0) %>%
+    arrange(p_adj, correlation) %>%
+    head(20) %>%
+    print()
+}
+```
+
+# Cross-Species Comparison
+
+## Summary Table
+
+```{r cross-species-summary}
+# Combine summaries from all three species
+species_summary <- tibble(
+  species = c("Apul", "Peve", "Ptua"),
+  total_exons = c(nrow(apul_exon), nrow(peve_exon), nrow(ptua_exon)),
+  total_cpgs = c(nrow(apul_cpg), nrow(peve_cpg), nrow(ptua_cpg)),
+  exon_cpg_pairs = c(
+    nrow(apul_exon_cpg_map), 
+    nrow(peve_exon_cpg_map), 
+    nrow(ptua_exon_cpg_map)
+  ),
+  correlations_tested = c(
+    nrow(apul_correlations),
+    nrow(peve_correlations),
+    nrow(ptua_correlations)
+  ),
+  sig_p05 = c(
+    sum(apul_correlations$p_value < 0.05, na.rm = TRUE),
+    sum(peve_correlations$p_value < 0.05, na.rm = TRUE),
+    sum(ptua_correlations$p_value < 0.05, na.rm = TRUE)
+  ),
+  sig_fdr10 = c(
+    sum(apul_correlations$p_adj < 0.1, na.rm = TRUE),
+    sum(peve_correlations$p_adj < 0.1, na.rm = TRUE),
+    sum(ptua_correlations$p_adj < 0.1, na.rm = TRUE)
+  ),
+  mean_correlation = c(
+    mean(apul_correlations$correlation, na.rm = TRUE),
+    mean(peve_correlations$correlation, na.rm = TRUE),
+    mean(ptua_correlations$correlation, na.rm = TRUE)
+  )
+)
+
+print(species_summary)
+
+# Save summary
+write_csv(species_summary, file.path(output_dir, "cross_species_summary.csv"))
+```
+
+## Correlation Distribution Comparison
+
+```{r cross-species-correlation-plot, fig.width=12, fig.height=5}
+# Combine all correlations
+all_correlations <- bind_rows(
+  apul_correlations %>% mutate(species = "Apul"),
+  peve_correlations %>% mutate(species = "Peve"),
+  ptua_correlations %>% mutate(species = "Ptua")
+)
+
+if (nrow(all_correlations) > 0) {
+  # Density plot comparison
+  p <- ggplot(all_correlations, aes(x = correlation, fill = species)) +
+    geom_density(alpha = 0.5) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "black") +
+    scale_fill_manual(values = c("Apul" = "steelblue", "Peve" = "coral", "Ptua" = "seagreen")) +
+    labs(
+      title = "Distribution of Exon-CpG Correlations Across Species",
+      x = "Spearman Correlation",
+      y = "Density",
+      fill = "Species"
+    ) +
+    theme_minimal()
+  
+  print(p)
+  
+  # Save combined results
+  write_csv(all_correlations, file.path(output_dir, "all_species_exon_cpg_correlations.csv"))
+}
+```
+
+# Gene-Level Summary
+
+Aggregate exon-level correlations to gene level to identify genes with consistent methylation-expression relationships.
+
+```{r gene-level-summary}
+# Function to summarize at gene level
+summarize_gene_correlations <- function(corr_df, species_name) {
+  if (nrow(corr_df) == 0) return(tibble())
+  
+  corr_df %>%
+    group_by(gene_id) %>%
+    summarise(
+      n_exons = n_distinct(e_id),
+      n_cpgs = n_distinct(cpg_id),
+      n_pairs = n(),
+      mean_correlation = mean(correlation, na.rm = TRUE),
+      median_correlation = median(correlation, na.rm = TRUE),
+      sd_correlation = sd(correlation, na.rm = TRUE),
+      n_sig_p05 = sum(p_value < 0.05, na.rm = TRUE),
+      n_sig_fdr10 = sum(p_adj < 0.1, na.rm = TRUE),
+      pct_positive = mean(correlation > 0, na.rm = TRUE) * 100,
+      min_p_adj = min(p_adj, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    arrange(min_p_adj) %>%
+    mutate(species = species_name)
+}
+
+# Summarize for each species
+apul_gene_summary <- summarize_gene_correlations(apul_correlations, "Apul")
+peve_gene_summary <- summarize_gene_correlations(peve_correlations, "Peve")
+ptua_gene_summary <- summarize_gene_correlations(ptua_correlations, "Ptua")
+
+# Save gene-level summaries
+if (nrow(apul_gene_summary) > 0) {
+  write_csv(apul_gene_summary, file.path(output_dir, "apul_gene_level_correlation_summary.csv"))
+  cat("\nApul: Top 10 genes by significance:\n")
+  print(head(apul_gene_summary, 10))
+}
+
+if (nrow(peve_gene_summary) > 0) {
+  write_csv(peve_gene_summary, file.path(output_dir, "peve_gene_level_correlation_summary.csv"))
+  cat("\nPeve: Top 10 genes by significance:\n")
+  print(head(peve_gene_summary, 10))
+}
+
+if (nrow(ptua_gene_summary) > 0) {
+  write_csv(ptua_gene_summary, file.path(output_dir, "ptua_gene_level_correlation_summary.csv"))
+  cat("\nPtua: Top 10 genes by significance:\n")
+  print(head(ptua_gene_summary, 10))
+}
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
