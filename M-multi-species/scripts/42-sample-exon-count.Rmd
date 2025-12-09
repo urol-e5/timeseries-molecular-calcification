@@ -1,0 +1,363 @@
+---
+title: "42-sample-exon-count"
+author: "Auto-generated"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = TRUE, warning = TRUE)
+
+library(dplyr)
+library(readr)
+library(purrr)
+library(tidyr)
+library(here)
+```
+
+# Overview
+
+This notebook calculates exon-level expression statistics **per sample** for each species (Apul, Peve, Ptua). Unlike `40-exon-count-matrix.Rmd` which aggregates across samples, this script provides sample-specific metrics.
+
+## Outputs
+
+For each species, this script generates per-sample statistics:
+
+- **Per-sample gene summary**: For each sample, statistics per gene including:
+  - `sample_id`
+  - `gene_id`
+  - `group_id` (ortholog ID)
+  - `n_exons` (number of exons per gene)
+  - `total_exon_counts` (sum of exon counts for the gene)
+  - `mean_exon_expr` (mean expression across exons)
+  - `sd_exon_expr` (standard deviation across exons)
+  - `cv_exon_expr` (coefficient of variation across exons)
+  - `protein_name`, `go_bp`, `go_cc`, `go_mf` (annotations)
+
+```{r paths}
+# Species-specific RNA-seq alignment output directories
+apul_rnaseq_dir <- here("D-Apul/output/02.20-D-Apul-RNAseq-alignment-HiSat2")
+peve_rnaseq_dir <- here("E-Peve/output/02.20-E-Peve-RNAseq-alignment-HiSat2")
+ptua_rnaseq_dir <- here("F-Ptua/output/02.20-F-Ptua-RNAseq-alignment-HiSat2")
+
+# Ortholog annotation file
+ortholog_file <- here("M-multi-species/output/12-ortho-annot/ortholog_groups_annotated.csv")
+
+# Output directory
+output_dir <- here("M-multi-species/output/42-sample-exon-count")
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+
+orthologs <- read_csv(ortholog_file, show_col_types = FALSE)
+```
+
+# Helper Functions
+
+## Read exon data for one sample
+
+```{r helper-read-exon}
+read_sample_exon_data <- function(sample_id, rnaseq_dir) {
+  sdir <- file.path(rnaseq_dir, sample_id)
+  
+  e_data_path <- file.path(sdir, "e_data.ctab")
+  e2t_path    <- file.path(sdir, "e2t.ctab")
+  t_data_path <- file.path(sdir, "t_data.ctab")
+  
+  if (!file.exists(e_data_path) || !file.exists(e2t_path) || !file.exists(t_data_path)) {
+    warning("Missing .ctab files for sample ", sample_id)
+    return(NULL)
+  }
+  
+  e_data <- read_tsv(e_data_path, show_col_types = FALSE)
+  e2t    <- read_tsv(e2t_path, show_col_types = FALSE)
+  t_data <- read_tsv(t_data_path, show_col_types = FALSE)
+  
+  # Join exon data with gene IDs
+
+  exon_gene <- e_data %>%
+    inner_join(e2t, by = "e_id") %>%
+    inner_join(t_data %>% select(t_id, gene_id), by = "t_id") %>%
+    group_by(gene_id, e_id, chr, strand, start, end) %>%
+    summarise(exon_count = sum(rcount), .groups = "drop") %>%
+    mutate(sample_id = sample_id)
+  
+  exon_gene
+}
+```
+
+## Compute per-sample gene statistics
+
+```{r helper-sample-stats}
+compute_sample_gene_stats <- function(exon_data) {
+  # For each gene in this sample, compute statistics across its exons
+  exon_data %>%
+    group_by(sample_id, gene_id) %>%
+    summarise(
+      n_exons = n(),
+      total_exon_counts = sum(exon_count, na.rm = TRUE),
+      mean_exon_expr = mean(exon_count, na.rm = TRUE),
+      sd_exon_expr = sd(exon_count, na.rm = TRUE),
+      cv_exon_expr = ifelse(mean_exon_expr > 0, sd_exon_expr / mean_exon_expr, NA_real_),
+      .groups = "drop"
+    )
+}
+```
+
+## Add ortholog annotations
+
+```{r helper-add-orthologs}
+add_ortholog_info <- function(gene_stats, orthologs_df, species_prefix) {
+  # Prepare ortholog subset with cleaned gene IDs
+  gene_col <- species_prefix
+  
+  orth_sub <- orthologs_df %>%
+    select(group_id, !!gene_col, protein_name, go_bp, go_cc, go_mf) %>%
+    rename(orth_gene_id = !!gene_col) %>%
+    # Clean ortholog gene IDs to match exon data format
+    mutate(gene_id = case_when(
+      # Apul ortholog format: FUN_000185-T1 -> FUN_000185 (exon data uses FUN_000185)
+      grepl("-T[0-9]+$", orth_gene_id) ~ sub("-T[0-9]+$", "", orth_gene_id),
+      # Peve ortholog format: Peve_00037402 -> gene-Peve_00037402 (exon data uses gene-Peve_*)
+      grepl("^Peve_", orth_gene_id) ~ paste0("gene-", orth_gene_id),
+      # Ptua ortholog format: ...g28886.t1 -> gene-...g28886.t1 (exon data uses gene-...g*.t*)
+      grepl("Pocillopora_meandrina", orth_gene_id) ~ paste0("gene-", orth_gene_id),
+      TRUE ~ orth_gene_id
+    )) %>%
+    select(-orth_gene_id)
+  
+  gene_stats %>%
+    left_join(orth_sub, by = "gene_id") %>%
+    relocate(sample_id, group_id, gene_id, protein_name, go_bp, go_cc, go_mf, .before = n_exons)
+}
+```
+
+# Process Each Species
+
+## Get sample lists
+
+```{r get-sample-lists}
+# Get sample directories for each species
+get_sample_ids <- function(rnaseq_dir, pattern) {
+  all_subdirs <- list.dirs(rnaseq_dir, full.names = FALSE, recursive = FALSE)
+  sample_ids <- all_subdirs[grepl(pattern, all_subdirs)]
+  sample_ids
+}
+
+apul_samples <- get_sample_ids(apul_rnaseq_dir, "TP[1-4]")
+peve_samples <- get_sample_ids(peve_rnaseq_dir, "TP[1-4]")
+ptua_samples <- get_sample_ids(ptua_rnaseq_dir, "TP[1-4]")
+
+cat("Apul samples:", length(apul_samples), "\n")
+cat("Peve samples:", length(peve_samples), "\n")
+cat("Ptua samples:", length(ptua_samples), "\n")
+```
+
+## Acropora pulchra
+
+```{r process-apul}
+cat("Processing Acropora pulchra...\n")
+
+# Read exon data for all samples
+apul_exon_list <- map(apul_samples, read_sample_exon_data, rnaseq_dir = apul_rnaseq_dir)
+apul_exon_all <- bind_rows(apul_exon_list)
+
+# Compute per-sample gene statistics
+apul_sample_stats <- compute_sample_gene_stats(apul_exon_all)
+
+# Add ortholog annotations
+apul_sample_stats <- add_ortholog_info(apul_sample_stats, orthologs, "apul")
+
+cat("Apul: ", n_distinct(apul_sample_stats$sample_id), " samples, ", 
+    n_distinct(apul_sample_stats$gene_id), " genes\n")
+```
+
+## Porites evermanni
+
+```{r process-peve}
+cat("Processing Porites evermanni...\n")
+
+# Read exon data for all samples
+peve_exon_list <- map(peve_samples, read_sample_exon_data, rnaseq_dir = peve_rnaseq_dir)
+peve_exon_all <- bind_rows(peve_exon_list)
+
+# Compute per-sample gene statistics
+peve_sample_stats <- compute_sample_gene_stats(peve_exon_all)
+
+# Add ortholog annotations
+peve_sample_stats <- add_ortholog_info(peve_sample_stats, orthologs, "peve")
+
+cat("Peve: ", n_distinct(peve_sample_stats$sample_id), " samples, ", 
+    n_distinct(peve_sample_stats$gene_id), " genes\n")
+```
+
+## Pocillopora tuahiniensis
+
+```{r process-ptua}
+cat("Processing Pocillopora tuahiniensis...\n")
+
+# Read exon data for all samples
+ptua_exon_list <- map(ptua_samples, read_sample_exon_data, rnaseq_dir = ptua_rnaseq_dir)
+ptua_exon_all <- bind_rows(ptua_exon_list)
+
+# Compute per-sample gene statistics
+ptua_sample_stats <- compute_sample_gene_stats(ptua_exon_all)
+
+# Add ortholog annotations
+ptua_sample_stats <- add_ortholog_info(ptua_sample_stats, orthologs, "ptua")
+
+cat("Ptua: ", n_distinct(ptua_sample_stats$sample_id), " samples, ", 
+    n_distinct(ptua_sample_stats$gene_id), " genes\n")
+```
+
+# Summary Statistics
+
+```{r summary-stats}
+cat("=== Per-Sample Gene Statistics Summary ===\n\n")
+
+# Apul summary
+cat("Acropora pulchra:\n")
+apul_sample_stats %>%
+  summarise(
+    n_samples = n_distinct(sample_id),
+    n_genes = n_distinct(gene_id),
+    n_with_ortholog = sum(!is.na(group_id)),
+    mean_exons_per_gene = mean(n_exons, na.rm = TRUE),
+    median_cv = median(cv_exon_expr, na.rm = TRUE)
+  ) %>%
+  print()
+
+cat("\nPorites evermanni:\n")
+peve_sample_stats %>%
+  summarise(
+    n_samples = n_distinct(sample_id),
+    n_genes = n_distinct(gene_id),
+    n_with_ortholog = sum(!is.na(group_id)),
+    mean_exons_per_gene = mean(n_exons, na.rm = TRUE),
+    median_cv = median(cv_exon_expr, na.rm = TRUE)
+  ) %>%
+  print()
+
+cat("\nPocillopora tuahiniensis:\n")
+ptua_sample_stats %>%
+  summarise(
+    n_samples = n_distinct(sample_id),
+    n_genes = n_distinct(gene_id),
+    n_with_ortholog = sum(!is.na(group_id)),
+    mean_exons_per_gene = mean(n_exons, na.rm = TRUE),
+    median_cv = median(cv_exon_expr, na.rm = TRUE)
+  ) %>%
+  print()
+```
+
+# Preview Data
+
+```{r preview}
+cat("=== Sample Data Preview ===\n\n")
+
+cat("Apul (first 10 rows):\n")
+head(apul_sample_stats, 10)
+
+cat("\nPeve (first 10 rows):\n")
+head(peve_sample_stats, 10)
+
+cat("\nPtua (first 10 rows):\n")
+head(ptua_sample_stats, 10)
+```
+
+# Create CV Matrices
+
+Create wide-format CV matrices where each row is a gene and each column is a sample.
+Only include genes with >5 exons and mean expression > 0.
+
+```{r cv-matrix-function}
+create_cv_matrix <- function(sample_stats) {
+  # Filter: n_exons > 5 and mean_exon_expr > 0
+  filtered <- sample_stats %>%
+    filter(n_exons > 5, mean_exon_expr > 0)
+  
+  cat("  After filtering: ", nrow(filtered), " rows (", 
+      n_distinct(filtered$gene_id), " genes x ", 
+      n_distinct(filtered$sample_id), " samples)\n")
+  
+  # Pivot to wide format: gene_id as rows, sample_id as columns, cv_exon_expr as values
+  cv_matrix <- filtered %>%
+    select(gene_id, sample_id, cv_exon_expr) %>%
+    pivot_wider(
+      names_from = sample_id,
+      values_from = cv_exon_expr,
+      values_fn = first  # In case of duplicates, take first value
+    )
+  
+  cv_matrix
+}
+```
+
+```{r create-cv-matrices}
+# Create CV matrices for each species
+cat("Creating Apul CV matrix...\n")
+apul_cv_matrix <- create_cv_matrix(apul_sample_stats)
+
+cat("Creating Peve CV matrix...\n")
+peve_cv_matrix <- create_cv_matrix(peve_sample_stats)
+
+cat("Creating Ptua CV matrix...\n")
+ptua_cv_matrix <- create_cv_matrix(ptua_sample_stats)
+
+cat("\nFinal matrix dimensions:\n")
+cat("Apul CV matrix: ", nrow(apul_cv_matrix), " genes x ", ncol(apul_cv_matrix) - 1, " samples\n")
+cat("Peve CV matrix: ", nrow(peve_cv_matrix), " genes x ", ncol(peve_cv_matrix) - 1, " samples\n")
+cat("Ptua CV matrix: ", nrow(ptua_cv_matrix), " genes x ", ncol(ptua_cv_matrix) - 1, " samples\n")
+
+# Verify data is present
+cat("\nVerifying data in matrices:\n")
+cat("Apul non-NA values: ", sum(!is.na(as.matrix(apul_cv_matrix[,-1]))), "\n")
+cat("Peve non-NA values: ", sum(!is.na(as.matrix(peve_cv_matrix[,-1]))), "\n")
+cat("Ptua non-NA values: ", sum(!is.na(as.matrix(ptua_cv_matrix[,-1]))), "\n")
+```
+
+```{r preview-cv-matrices}
+cat("=== CV Matrix Preview ===\n\n")
+
+cat("Apul CV matrix (first 5 rows, first 10 columns):\n")
+head(apul_cv_matrix[, 1:min(10, ncol(apul_cv_matrix))], 5)
+
+cat("\nPeve CV matrix (first 5 rows, first 10 columns):\n")
+head(peve_cv_matrix[, 1:min(10, ncol(peve_cv_matrix))], 5)
+
+cat("\nPtua CV matrix (first 5 rows, first 10 columns):\n")
+head(ptua_cv_matrix[, 1:min(10, ncol(ptua_cv_matrix))], 5)
+```
+
+# Export Data
+
+```{r export}
+# Write per-sample statistics
+write_csv(apul_sample_stats, file.path(output_dir, "apul-sample_exon_stats.csv"))
+write_csv(peve_sample_stats, file.path(output_dir, "peve-sample_exon_stats.csv"))
+write_csv(ptua_sample_stats, file.path(output_dir, "ptua-sample_exon_stats.csv"))
+
+# Also write raw exon-level data per sample (optional, for detailed analysis)
+write_csv(apul_exon_all, file.path(output_dir, "apul-sample_exon_counts.csv"))
+write_csv(peve_exon_all, file.path(output_dir, "peve-sample_exon_counts.csv"))
+write_csv(ptua_exon_all, file.path(output_dir, "ptua-sample_exon_counts.csv"))
+
+# Write CV matrices (wide format: genes x samples)
+write_tsv(apul_cv_matrix, file.path(output_dir, "apul-cv_matrix.tsv"))
+write_tsv(peve_cv_matrix, file.path(output_dir, "peve-cv_matrix.tsv"))
+write_tsv(ptua_cv_matrix, file.path(output_dir, "ptua-cv_matrix.tsv"))
+
+cat("\nExported files to:", output_dir, "\n")
+cat("  - *-sample_exon_stats.csv: Per-sample gene-level statistics\n")
+cat("  - *-sample_exon_counts.csv: Raw exon counts per sample\n")
+cat("  - *-cv_matrix.tsv: CV matrix (genes x samples, n_exons > 5 & mean_expr > 0)\n")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
