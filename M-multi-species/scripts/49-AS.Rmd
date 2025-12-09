@@ -1,0 +1,968 @@
+---
+title: "49-AS: Alternative Splicing Analysis"
+author: "Timeseries Molecular Calcification Project"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = TRUE, warning = TRUE)
+
+# Required packages
+library(ballgown)
+library(dplyr)
+library(tidyr)
+library(readr)
+library(ggplot2)
+library(here)
+```
+
+# Overview
+
+This notebook performs alternative splicing (AS) analysis for three coral species:
+
+- **Acropora pulchra** (Apul)
+- **Porites evermanni** (Peve)
+- **Pocillopora tuahiniensis** (Ptua)
+
+## Background
+
+Each sample's StringTie/Ballgown output directory contains:
+
+| File | Description |
+|------|-------------|
+| `e_data.ctab` | Exon-level counts and FPKM |
+| `i_data.ctab` | Intron/junction coverage |
+| `t_data.ctab` | Transcript-level FPKM |
+| `e2t.ctab` | Exon-to-transcript mapping |
+| `i2t.ctab` | Intron-to-transcript mapping |
+
+Alternative splicing events are identified when:
+
+1. Transcripts of the same gene change in relative abundance across conditions (timepoints)
+2. Certain exons or splice junctions show condition-specific expression patterns
+
+## Analysis Strategies
+
+We employ three complementary strategies:
+
+1. **Strategy 1**: Differential Transcript Usage (DTU) — Identify genes whose isoform proportions change across timepoints
+2. **Strategy 2**: Differential Exon Usage — Identify exons with expression changes independent of whole-gene expression
+3. **Strategy 3**: Junction-Level Tests — Identify differential splice junction usage
+
+```{r paths}
+# Base directory
+base_dir <- here::here("M-multi-species")
+
+# Species-specific RNA-seq alignment output directories
+apul_rnaseq_dir <- here::here("D-Apul/output/02.20-D-Apul-RNAseq-alignment-HiSat2")
+peve_rnaseq_dir <- here::here("E-Peve/output/02.20-E-Peve-RNAseq-alignment-HiSat2")
+ptua_rnaseq_dir <- here::here("F-Ptua/output/02.20-F-Ptua-RNAseq-alignment-HiSat2")
+
+# Master metadata
+metadata_file <- here::here("master-molecular-metadata.csv")
+
+# Output directory for AS results
+output_dir <- here::here("M-multi-species/output/49-AS")
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+
+# Read master metadata
+master_metadata <- read_csv(metadata_file, show_col_types = FALSE)
+```
+
+# Helper Functions
+
+## Create Sample Metadata
+
+```{r helper-create-metadata}
+#' Create sample metadata for ballgown from master metadata
+#' @param rnaseq_dir Path to RNA-seq alignment output directory
+#' @param species_pattern Regex pattern to identify species (e.g., "ACR", "POR", "POC")
+#' @param master_meta Master metadata dataframe
+#' @return Dataframe with sample_id, path, colony, timepoint, site
+create_sample_metadata <- function(rnaseq_dir, species_pattern, master_meta) {
+  # Get sample directories
+  all_subdirs <- list.dirs(rnaseq_dir, full.names = FALSE, recursive = FALSE)
+  sample_ids <- all_subdirs[grepl(species_pattern, all_subdirs)]
+  
+  # Filter for only sample directories (those containing ctab files)
+  valid_samples <- sample_ids[sapply(sample_ids, function(s) {
+    file.exists(file.path(rnaseq_dir, s, "e_data.ctab"))
+  })]
+  
+  # Create metadata dataframe
+  sample_meta <- data.frame(
+    sample_id = valid_samples,
+    path = file.path(rnaseq_dir, valid_samples),
+    stringsAsFactors = FALSE
+  )
+  
+  # Parse colony and timepoint from sample_id (e.g., "ACR-139-TP1" -> colony="ACR-139", timepoint="TP1")
+  sample_meta <- sample_meta %>%
+    mutate(
+      colony = sub("-TP[1-4]$", "", sample_id),
+      timepoint = sub(".*-(TP[1-4])$", "\\1", sample_id)
+    )
+  
+  # Join with master metadata for site information
+  sample_meta <- sample_meta %>%
+    left_join(
+      master_meta %>% 
+        select(colony, timepoint, site, species) %>%
+        distinct(),
+      by = c("colony", "timepoint")
+    )
+  
+  # Set rownames for ballgown pData
+  rownames(sample_meta) <- sample_meta$sample_id
+  
+  sample_meta
+}
+```
+
+## Load Ballgown Object
+
+```{r helper-load-ballgown}
+#' Load ballgown object from sample directories
+#' @param sample_meta Sample metadata with 'path' column
+#' @return ballgown object
+load_ballgown_object <- function(sample_meta) {
+  # ballgown requires directories containing ctab files
+  bg <- ballgown(
+    samples = sample_meta$path,
+    meas = "all",
+    pData = sample_meta
+  )
+  return(bg)
+}
+```
+
+# Acropora pulchra (Apul) Analysis
+
+## Load Data
+
+```{r apul-load}
+# Create sample metadata for Apul
+apul_sample_meta <- create_sample_metadata(
+  rnaseq_dir = apul_rnaseq_dir,
+  species_pattern = "^ACR-",
+  master_meta = master_metadata
+)
+
+cat("Apul samples loaded:", nrow(apul_sample_meta), "\n")
+cat("Timepoint distribution:\n")
+print(table(apul_sample_meta$timepoint))
+
+# Load ballgown object
+apul_bg <- load_ballgown_object(apul_sample_meta)
+```
+
+## Strategy 1: Differential Transcript Usage (DTU)
+
+Identify genes whose isoform proportions change across timepoints.
+
+```{r apul-dtu}
+# Perform differential expression on transcripts across timepoints
+apul_transcript_results <- stattest(
+  apul_bg,
+  feature = "transcript",
+  meas = "FPKM",
+  covariate = "timepoint",
+  getFC = TRUE
+)
+
+# Add gene information to transcript results
+# Get transcript data from ballgown object
+apul_t_data <- texpr(apul_bg, meas = "all")
+apul_transcript_results <- apul_transcript_results %>%
+  mutate(id = as.integer(id)) %>%
+  left_join(
+    data.frame(
+      id = as.integer(apul_t_data$t_id),
+      gene_id = apul_t_data$gene_id,
+      t_name = apul_t_data$t_name
+    ),
+    by = "id"
+  )
+
+# Identify genes with multiple differentially expressed transcripts
+apul_dtu_candidates <- apul_transcript_results %>%
+  filter(!is.na(qval)) %>%
+  group_by(gene_id) %>%
+  summarize(
+    n_transcripts = n(),
+    n_sig = sum(qval < 0.05, na.rm = TRUE),
+    min_qval = min(qval, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(n_transcripts >= 2, n_sig >= 1) %>%
+  arrange(min_qval)
+
+cat("Apul DTU candidate genes:", nrow(apul_dtu_candidates), "\n")
+head(apul_dtu_candidates, 20)
+```
+
+## Strategy 2: Differential Exon Usage
+
+Identify exons whose expression changes independently of whole-gene expression.
+
+```{r apul-exon}
+# Perform differential expression on exons
+apul_exon_results <- stattest(
+  apul_bg,
+  feature = "exon",
+  meas = "rcount",
+  covariate = "timepoint"
+)
+
+# Filter significant exons
+apul_exon_sig <- apul_exon_results %>%
+  filter(qval < 0.05) %>%
+  arrange(qval)
+
+cat("Apul significant exons:", nrow(apul_exon_sig), "\n")
+head(apul_exon_sig, 20)
+```
+
+## Strategy 3: Junction-Level Tests
+
+Identify differential splice junction usage.
+
+```{r apul-junction}
+# Perform differential expression on introns/junctions
+apul_junction_results <- stattest(
+  apul_bg,
+  feature = "intron",
+  meas = "rcount",
+  covariate = "timepoint"
+)
+
+# Filter significant junctions
+apul_junction_sig <- apul_junction_results %>%
+  filter(qval < 0.05) %>%
+  arrange(qval)
+
+cat("Apul significant junctions:", nrow(apul_junction_sig), "\n")
+head(apul_junction_sig, 20)
+```
+
+## Integrate Apul Results
+
+```{r apul-integrate}
+# Get gene IDs from exon results by mapping e_id to gene_id via transcript data
+apul_e2t <- eexpr(apul_bg, meas = "all")
+apul_exon_gene_map <- data.frame(
+  e_id = seq_len(nrow(apul_e2t))
+)
+# For exons, we need to map through the structure - use indexes from significant results
+if (nrow(apul_exon_sig) > 0) {
+  apul_exon_gene_ids <- unique(apul_t_data$gene_id[apul_exon_sig$id])
+} else {
+  apul_exon_gene_ids <- character(0)
+}
+
+# Get gene IDs from junction results
+if (nrow(apul_junction_sig) > 0) {
+  apul_junction_gene_ids <- unique(apul_t_data$gene_id[apul_junction_sig$id])
+} else {
+  apul_junction_gene_ids <- character(0)
+}
+
+# Combine all AS candidate genes
+apul_AS_genes <- unique(c(
+  apul_dtu_candidates$gene_id,
+  apul_exon_gene_ids,
+  apul_junction_gene_ids
+))
+apul_AS_genes <- apul_AS_genes[!is.na(apul_AS_genes)]
+
+cat("Apul total AS candidate genes:", length(apul_AS_genes), "\n")
+
+# Create summary dataframe
+apul_AS_summary <- data.frame(
+  gene_id = apul_AS_genes,
+  in_dtu = apul_AS_genes %in% apul_dtu_candidates$gene_id,
+  in_exon = apul_AS_genes %in% apul_exon_gene_ids,
+  in_junction = apul_AS_genes %in% apul_junction_gene_ids
+) %>%
+  mutate(n_evidence = in_dtu + in_exon + in_junction) %>%
+  arrange(desc(n_evidence))
+
+cat("\nEvidence distribution:\n")
+print(table(apul_AS_summary$n_evidence))
+```
+
+# Porites evermanni (Peve) Analysis
+
+## Load Data
+
+```{r peve-load}
+# Create sample metadata for Peve
+peve_sample_meta <- create_sample_metadata(
+  rnaseq_dir = peve_rnaseq_dir,
+  species_pattern = "^POR-",
+  master_meta = master_metadata
+)
+
+cat("Peve samples loaded:", nrow(peve_sample_meta), "\n")
+cat("Timepoint distribution:\n")
+print(table(peve_sample_meta$timepoint))
+
+# Load ballgown object
+peve_bg <- load_ballgown_object(peve_sample_meta)
+```
+
+## Strategy 1: Differential Transcript Usage (DTU)
+
+```{r peve-dtu}
+# Perform differential expression on transcripts across timepoints
+peve_transcript_results <- stattest(
+  peve_bg,
+  feature = "transcript",
+  meas = "FPKM",
+  covariate = "timepoint",
+  getFC = TRUE
+)
+
+# Add gene information to transcript results
+peve_t_data <- texpr(peve_bg, meas = "all")
+peve_transcript_results <- peve_transcript_results %>%
+  mutate(id = as.integer(id)) %>%
+  left_join(
+    data.frame(
+      id = as.integer(peve_t_data$t_id),
+      gene_id = peve_t_data$gene_id,
+      t_name = peve_t_data$t_name
+    ),
+    by = "id"
+  )
+
+# Identify genes with multiple differentially expressed transcripts
+peve_dtu_candidates <- peve_transcript_results %>%
+  filter(!is.na(qval)) %>%
+  group_by(gene_id) %>%
+  summarize(
+    n_transcripts = n(),
+    n_sig = sum(qval < 0.05, na.rm = TRUE),
+    min_qval = min(qval, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(n_transcripts >= 2, n_sig >= 1) %>%
+  arrange(min_qval)
+
+cat("Peve DTU candidate genes:", nrow(peve_dtu_candidates), "\n")
+head(peve_dtu_candidates, 20)
+```
+
+## Strategy 2: Differential Exon Usage
+
+```{r peve-exon}
+# Perform differential expression on exons
+peve_exon_results <- stattest(
+  peve_bg,
+  feature = "exon",
+  meas = "rcount",
+  covariate = "timepoint"
+)
+
+# Filter significant exons
+peve_exon_sig <- peve_exon_results %>%
+  filter(qval < 0.05) %>%
+  arrange(qval)
+
+cat("Peve significant exons:", nrow(peve_exon_sig), "\n")
+head(peve_exon_sig, 20)
+```
+
+## Strategy 3: Junction-Level Tests
+
+```{r peve-junction}
+# Perform differential expression on introns/junctions
+peve_junction_results <- stattest(
+  peve_bg,
+  feature = "intron",
+  meas = "rcount",
+  covariate = "timepoint"
+)
+
+# Filter significant junctions
+peve_junction_sig <- peve_junction_results %>%
+  filter(qval < 0.05) %>%
+  arrange(qval)
+
+cat("Peve significant junctions:", nrow(peve_junction_sig), "\n")
+head(peve_junction_sig, 20)
+```
+
+## Integrate Peve Results
+
+```{r peve-integrate}
+# Get gene IDs from exon results
+if (nrow(peve_exon_sig) > 0) {
+  peve_exon_gene_ids <- unique(peve_t_data$gene_id[peve_exon_sig$id])
+} else {
+  peve_exon_gene_ids <- character(0)
+}
+
+# Get gene IDs from junction results
+if (nrow(peve_junction_sig) > 0) {
+  peve_junction_gene_ids <- unique(peve_t_data$gene_id[peve_junction_sig$id])
+} else {
+  peve_junction_gene_ids <- character(0)
+}
+
+# Combine all AS candidate genes
+peve_AS_genes <- unique(c(
+  peve_dtu_candidates$gene_id,
+  peve_exon_gene_ids,
+  peve_junction_gene_ids
+))
+peve_AS_genes <- peve_AS_genes[!is.na(peve_AS_genes)]
+
+cat("Peve total AS candidate genes:", length(peve_AS_genes), "\n")
+
+# Create summary dataframe
+peve_AS_summary <- data.frame(
+  gene_id = peve_AS_genes,
+  in_dtu = peve_AS_genes %in% peve_dtu_candidates$gene_id,
+  in_exon = peve_AS_genes %in% peve_exon_gene_ids,
+  in_junction = peve_AS_genes %in% peve_junction_gene_ids
+) %>%
+  mutate(n_evidence = in_dtu + in_exon + in_junction) %>%
+  arrange(desc(n_evidence))
+
+cat("\nEvidence distribution:\n")
+print(table(peve_AS_summary$n_evidence))
+```
+
+# Pocillopora tuahiniensis (Ptua) Analysis
+
+## Load Data
+
+```{r ptua-load}
+# Create sample metadata for Ptua
+ptua_sample_meta <- create_sample_metadata(
+  rnaseq_dir = ptua_rnaseq_dir,
+  species_pattern = "^POC-",
+  master_meta = master_metadata
+)
+
+cat("Ptua samples loaded:", nrow(ptua_sample_meta), "\n")
+cat("Timepoint distribution:\n")
+print(table(ptua_sample_meta$timepoint))
+
+# Load ballgown object
+ptua_bg <- load_ballgown_object(ptua_sample_meta)
+```
+
+## Strategy 1: Differential Transcript Usage (DTU)
+
+```{r ptua-dtu}
+# Perform differential expression on transcripts across timepoints
+ptua_transcript_results <- stattest(
+  ptua_bg,
+  feature = "transcript",
+  meas = "FPKM",
+  covariate = "timepoint",
+  getFC = TRUE
+)
+
+# Add gene information to transcript results
+ptua_t_data <- texpr(ptua_bg, meas = "all")
+ptua_transcript_results <- ptua_transcript_results %>%
+  mutate(id = as.integer(id)) %>%
+  left_join(
+    data.frame(
+      id = as.integer(ptua_t_data$t_id),
+      gene_id = ptua_t_data$gene_id,
+      t_name = ptua_t_data$t_name
+    ),
+    by = "id"
+  )
+
+# Identify genes with multiple differentially expressed transcripts
+ptua_dtu_candidates <- ptua_transcript_results %>%
+  filter(!is.na(qval)) %>%
+  group_by(gene_id) %>%
+  summarize(
+    n_transcripts = n(),
+    n_sig = sum(qval < 0.05, na.rm = TRUE),
+    min_qval = min(qval, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(n_transcripts >= 2, n_sig >= 1) %>%
+  arrange(min_qval)
+
+cat("Ptua DTU candidate genes:", nrow(ptua_dtu_candidates), "\n")
+head(ptua_dtu_candidates, 20)
+```
+
+## Strategy 2: Differential Exon Usage
+
+```{r ptua-exon}
+# Perform differential expression on exons
+ptua_exon_results <- stattest(
+  ptua_bg,
+  feature = "exon",
+  meas = "rcount",
+  covariate = "timepoint"
+)
+
+# Filter significant exons
+ptua_exon_sig <- ptua_exon_results %>%
+  filter(qval < 0.05) %>%
+  arrange(qval)
+
+cat("Ptua significant exons:", nrow(ptua_exon_sig), "\n")
+head(ptua_exon_sig, 20)
+```
+
+## Strategy 3: Junction-Level Tests
+
+```{r ptua-junction}
+# Perform differential expression on introns/junctions
+ptua_junction_results <- stattest(
+  ptua_bg,
+  feature = "intron",
+  meas = "rcount",
+  covariate = "timepoint"
+)
+
+# Filter significant junctions
+ptua_junction_sig <- ptua_junction_results %>%
+  filter(qval < 0.05) %>%
+  arrange(qval)
+
+cat("Ptua significant junctions:", nrow(ptua_junction_sig), "\n")
+head(ptua_junction_sig, 20)
+```
+
+## Integrate Ptua Results
+
+```{r ptua-integrate}
+# Get gene IDs from exon results
+if (nrow(ptua_exon_sig) > 0) {
+  ptua_exon_gene_ids <- unique(ptua_t_data$gene_id[ptua_exon_sig$id])
+} else {
+  ptua_exon_gene_ids <- character(0)
+}
+
+# Get gene IDs from junction results
+if (nrow(ptua_junction_sig) > 0) {
+  ptua_junction_gene_ids <- unique(ptua_t_data$gene_id[ptua_junction_sig$id])
+} else {
+  ptua_junction_gene_ids <- character(0)
+}
+
+# Combine all AS candidate genes
+ptua_AS_genes <- unique(c(
+  ptua_dtu_candidates$gene_id,
+  ptua_exon_gene_ids,
+  ptua_junction_gene_ids
+))
+ptua_AS_genes <- ptua_AS_genes[!is.na(ptua_AS_genes)]
+
+cat("Ptua total AS candidate genes:", length(ptua_AS_genes), "\n")
+
+# Create summary dataframe
+ptua_AS_summary <- data.frame(
+  gene_id = ptua_AS_genes,
+  in_dtu = ptua_AS_genes %in% ptua_dtu_candidates$gene_id,
+  in_exon = ptua_AS_genes %in% ptua_exon_gene_ids,
+  in_junction = ptua_AS_genes %in% ptua_junction_gene_ids
+) %>%
+  mutate(n_evidence = in_dtu + in_exon + in_junction) %>%
+  arrange(desc(n_evidence))
+
+cat("\nEvidence distribution:\n")
+print(table(ptua_AS_summary$n_evidence))
+```
+
+# Cross-Species Comparison
+
+## Summary Statistics
+
+```{r cross-species-summary}
+# Create summary table
+as_summary <- data.frame(
+  Species = c("Apul", "Peve", "Ptua"),
+  Total_AS_Genes = c(length(apul_AS_genes), length(peve_AS_genes), length(ptua_AS_genes)),
+  DTU_Candidates = c(nrow(apul_dtu_candidates), nrow(peve_dtu_candidates), nrow(ptua_dtu_candidates)),
+  Sig_Exons = c(nrow(apul_exon_sig), nrow(peve_exon_sig), nrow(ptua_exon_sig)),
+  Sig_Junctions = c(nrow(apul_junction_sig), nrow(peve_junction_sig), nrow(ptua_junction_sig))
+)
+
+print(as_summary)
+```
+
+# Data Quality Diagnostics
+
+This section investigates potential causes for dramatic differences in AS detection across species.
+
+## Exon Expression Distribution
+
+```{r diag-exon-expression, fig.width=12, fig.height=8}
+# Extract exon-level coverage for each species (FPKM not available for exons)
+apul_exon_cov <- eexpr(apul_bg, meas = "cov")
+peve_exon_cov <- eexpr(peve_bg, meas = "cov")
+ptua_exon_cov <- eexpr(ptua_bg, meas = "cov")
+
+# Summary statistics
+cat("=== Exon Coverage Summary ===\n\n")
+
+cat("Apul:\n")
+cat("  Total exons:", nrow(apul_exon_cov), "\n")
+cat("  Mean coverage:", round(mean(as.matrix(apul_exon_cov), na.rm = TRUE), 3), "\n")
+cat("  Median coverage:", round(median(as.matrix(apul_exon_cov), na.rm = TRUE), 3), "\n")
+cat("  % zero:", round(100 * sum(as.matrix(apul_exon_cov) == 0, na.rm = TRUE) / length(as.matrix(apul_exon_cov)), 2), "\n\n")
+
+cat("Peve:\n")
+cat("  Total exons:", nrow(peve_exon_cov), "\n")
+cat("  Mean coverage:", round(mean(as.matrix(peve_exon_cov), na.rm = TRUE), 3), "\n")
+cat("  Median coverage:", round(median(as.matrix(peve_exon_cov), na.rm = TRUE), 3), "\n")
+cat("  % zero:", round(100 * sum(as.matrix(peve_exon_cov) == 0, na.rm = TRUE) / length(as.matrix(peve_exon_cov)), 2), "\n\n")
+
+cat("Ptua:\n")
+cat("  Total exons:", nrow(ptua_exon_cov), "\n")
+cat("  Mean coverage:", round(mean(as.matrix(ptua_exon_cov), na.rm = TRUE), 3), "\n")
+cat("  Median coverage:", round(median(as.matrix(ptua_exon_cov), na.rm = TRUE), 3), "\n")
+cat("  % zero:", round(100 * sum(as.matrix(ptua_exon_cov) == 0, na.rm = TRUE) / length(as.matrix(ptua_exon_cov)), 2), "\n")
+
+# Create combined density plot
+apul_cov_long <- data.frame(
+  species = "Apul",
+  log_cov = log10(as.vector(as.matrix(apul_exon_cov)) + 1)
+)
+peve_cov_long <- data.frame(
+  species = "Peve", 
+  log_cov = log10(as.vector(as.matrix(peve_exon_cov)) + 1)
+)
+ptua_cov_long <- data.frame(
+  species = "Ptua",
+  log_cov = log10(as.vector(as.matrix(ptua_exon_cov)) + 1)
+)
+
+cov_combined <- bind_rows(apul_cov_long, peve_cov_long, ptua_cov_long)
+
+ggplot(cov_combined, aes(x = log_cov, fill = species)) +
+  geom_density(alpha = 0.5) +
+  labs(
+    title = "Distribution of Exon Coverage Across Species",
+    subtitle = "log10(coverage + 1)",
+    x = "log10(coverage + 1)",
+    y = "Density"
+  ) +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set1")
+```
+
+## P-value Distribution Diagnostics
+
+```{r diag-pvalue-dist, fig.width=14, fig.height=5}
+# P-value histograms - uniform distribution indicates no signal or well-calibrated null
+par(mfrow = c(1, 3))
+
+# Apul
+hist(apul_exon_results$pval, breaks = 50, main = "Apul Exon P-values",
+     xlab = "P-value", col = "steelblue", border = "white")
+abline(h = nrow(apul_exon_results[!is.na(apul_exon_results$pval),]) / 50, 
+       col = "red", lty = 2, lwd = 2)
+
+# Peve  
+hist(peve_exon_results$pval, breaks = 50, main = "Peve Exon P-values",
+     xlab = "P-value", col = "coral", border = "white")
+abline(h = nrow(peve_exon_results[!is.na(peve_exon_results$pval),]) / 50,
+       col = "red", lty = 2, lwd = 2)
+
+# Ptua
+hist(ptua_exon_results$pval, breaks = 50, main = "Ptua Exon P-values",
+     xlab = "P-value", col = "seagreen", border = "white")
+abline(h = nrow(ptua_exon_results[!is.na(ptua_exon_results$pval),]) / 50,
+       col = "red", lty = 2, lwd = 2)
+
+cat("\n=== P-value Distribution Summary ===\n")
+cat("Red dashed line = expected count under null hypothesis (uniform distribution)\n")
+cat("Enrichment near 0 indicates true signal; uniform = no signal or data issue\n\n")
+
+cat("Apul - Exons with p < 0.01:", sum(apul_exon_results$pval < 0.01, na.rm = TRUE), 
+    "(", round(100 * sum(apul_exon_results$pval < 0.01, na.rm = TRUE) / sum(!is.na(apul_exon_results$pval)), 2), "%)\n")
+cat("Peve - Exons with p < 0.01:", sum(peve_exon_results$pval < 0.01, na.rm = TRUE),
+    "(", round(100 * sum(peve_exon_results$pval < 0.01, na.rm = TRUE) / sum(!is.na(peve_exon_results$pval)), 2), "%)\n")
+cat("Ptua - Exons with p < 0.01:", sum(ptua_exon_results$pval < 0.01, na.rm = TRUE),
+    "(", round(100 * sum(ptua_exon_results$pval < 0.01, na.rm = TRUE) / sum(!is.na(ptua_exon_results$pval)), 2), "%)\n")
+```
+
+## Exon Variance Comparison
+
+```{r diag-variance, fig.width=12, fig.height=5}
+# Calculate per-exon variance (coefficient of variation)
+calc_cv <- function(cov_matrix) {
+  apply(cov_matrix, 1, function(x) {
+    m <- mean(x, na.rm = TRUE)
+    s <- sd(x, na.rm = TRUE)
+    if (m > 0) s / m else NA
+  })
+}
+
+apul_cv <- calc_cv(apul_exon_cov)
+peve_cv <- calc_cv(peve_exon_cov)
+ptua_cv <- calc_cv(ptua_exon_cov)
+
+cat("=== Coefficient of Variation (CV) Summary ===\n")
+cat("Higher CV indicates more variable expression across samples\n\n")
+
+cat("Apul - Median CV:", round(median(apul_cv, na.rm = TRUE), 3), 
+    "Mean CV:", round(mean(apul_cv, na.rm = TRUE), 3), "\n")
+cat("Peve - Median CV:", round(median(peve_cv, na.rm = TRUE), 3),
+    "Mean CV:", round(mean(peve_cv, na.rm = TRUE), 3), "\n")
+cat("Ptua - Median CV:", round(median(ptua_cv, na.rm = TRUE), 3),
+    "Mean CV:", round(mean(ptua_cv, na.rm = TRUE), 3), "\n")
+
+# CV distribution plot
+cv_combined <- data.frame(
+  species = c(rep("Apul", length(apul_cv)), 
+              rep("Peve", length(peve_cv)), 
+              rep("Ptua", length(ptua_cv))),
+  cv = c(apul_cv, peve_cv, ptua_cv)
+) %>%
+  filter(!is.na(cv) & cv < 5)  # Filter extreme values for visualization
+
+ggplot(cv_combined, aes(x = cv, fill = species)) +
+  geom_density(alpha = 0.5) +
+  labs(
+    title = "Distribution of Exon Expression Variability",
+    subtitle = "Coefficient of Variation (CV) across samples - lower CV may explain fewer significant results",
+    x = "Coefficient of Variation",
+    y = "Density"
+  ) +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set1") +
+  geom_vline(xintercept = 0.5, linetype = "dashed", color = "gray50")
+```
+
+## Sample-level Expression PCA
+
+```{r diag-pca, fig.width=14, fig.height=5}
+# PCA to visualize sample separation by timepoint
+run_pca_plot <- function(bg_obj, sample_meta, species_name) {
+  # Get transcript FPKM
+  fpkm <- texpr(bg_obj, meas = "FPKM")
+  
+  # Filter low expression transcripts
+  keep <- rowSums(fpkm > 1) >= 3
+  fpkm_filt <- fpkm[keep, ]
+  
+  if (nrow(fpkm_filt) < 10) {
+    cat(species_name, ": Not enough transcripts for PCA\n")
+    return(NULL)
+  }
+  
+  # Log transform
+  log_fpkm <- log2(fpkm_filt + 1)
+  
+  # PCA
+  pca_result <- prcomp(t(log_fpkm), center = TRUE, scale. = TRUE)
+  
+  # Extract PC scores
+  pc_scores <- as.data.frame(pca_result$x[, 1:2])
+  pc_scores$sample_id <- rownames(pc_scores)
+  pc_scores$timepoint <- sample_meta$timepoint[match(pc_scores$sample_id, sample_meta$sample_id)]
+  
+  # Variance explained
+  var_explained <- round(100 * summary(pca_result)$importance[2, 1:2], 1)
+  
+  ggplot(pc_scores, aes(x = PC1, y = PC2, color = timepoint)) +
+    geom_point(size = 3) +
+    labs(
+      title = paste(species_name, "- Sample PCA"),
+      subtitle = "Colored by timepoint - separation indicates temporal signal",
+      x = paste0("PC1 (", var_explained[1], "%)"),
+      y = paste0("PC2 (", var_explained[2], "%)")
+    ) +
+    theme_minimal() +
+    scale_color_brewer(palette = "Set1")
+}
+
+# Create PCA plots
+p1 <- run_pca_plot(apul_bg, apul_sample_meta, "Apul")
+p2 <- run_pca_plot(peve_bg, peve_sample_meta, "Peve")
+p3 <- run_pca_plot(ptua_bg, ptua_sample_meta, "Ptua")
+
+# Combine plots if all exist
+if (!is.null(p1) && !is.null(p2) && !is.null(p3)) {
+  library(patchwork)
+  p1 + p2 + p3
+}
+```
+
+## NA Rate Comparison
+
+```{r diag-na-rate}
+cat("=== NA Rate in Statistical Tests ===\n")
+cat("High NA rate may indicate low/zero counts or computational issues\n\n")
+
+calc_na_rate <- function(results_df) {
+  n_total <- nrow(results_df)
+  n_na <- sum(is.na(results_df$pval))
+  list(total = n_total, na_count = n_na, pct = round(100 * n_na / n_total, 2))
+}
+
+apul_na <- calc_na_rate(apul_exon_results)
+peve_na <- calc_na_rate(peve_exon_results)
+ptua_na <- calc_na_rate(ptua_exon_results)
+
+na_summary <- data.frame(
+  Species = c("Apul", "Peve", "Ptua"),
+  Total_Exons = c(apul_na$total, peve_na$total, ptua_na$total),
+  NA_Count = c(apul_na$na_count, peve_na$na_count, ptua_na$na_count),
+  NA_Percent = c(apul_na$pct, peve_na$pct, ptua_na$pct)
+)
+
+print(na_summary)
+```
+
+## Timepoint Sample Balance
+
+```{r diag-sample-balance}
+cat("=== Sample Distribution by Timepoint ===\n")
+cat("Imbalanced design may reduce statistical power\n\n")
+
+cat("Apul:\n")
+print(table(apul_sample_meta$timepoint))
+
+cat("\nPeve:\n")
+print(table(peve_sample_meta$timepoint))
+
+cat("\nPtua:\n")
+print(table(ptua_sample_meta$timepoint))
+```
+
+## Diagnostic Summary
+
+```{r diag-summary}
+cat("=== DIAGNOSTIC SUMMARY ===\n\n")
+
+cat("1. EXPRESSION LEVELS:\n")
+cat("   Compare mean/median FPKM and % zeros between species.\n")
+cat("   Lower expression = less power to detect differences.\n\n")
+
+cat("2. P-VALUE DISTRIBUTION:\n")
+cat("   Uniform distribution (flat histogram) = no biological signal or data issue.\n")
+cat("   Enrichment near 0 = true biological differences.\n")
+cat("   Peve's near-uniform distribution is concerning.\n\n")
+
+cat("3. EXPRESSION VARIANCE:\n")
+cat("   Lower CV = less variation = harder to detect differences.\n")
+cat("   If Peve has systematically lower CV, this explains fewer findings.\n\n")
+
+cat("4. PCA SEPARATION:\n")
+cat("   Poor timepoint separation = weak temporal signal.\n")
+cat("   This could be biological (stable expression) or technical.\n\n")
+
+cat("5. RECOMMENDATIONS:\n")
+cat("   - Check Peve alignment rates and read depth\n")
+cat("   - Verify Peve genome/annotation quality\n")
+cat("   - Consider whether Peve genuinely has stable expression\n")
+cat("   - Look for batch effects in Peve samples\n")
+```
+
+## Visualization
+
+```{r viz-as-counts, fig.width=10, fig.height=6}
+# Reshape for plotting
+as_summary_long <- as_summary %>%
+  pivot_longer(
+    cols = c(DTU_Candidates, Sig_Exons, Sig_Junctions),
+    names_to = "Category",
+    values_to = "Count"
+  ) %>%
+  mutate(Category = factor(Category, levels = c("DTU_Candidates", "Sig_Exons", "Sig_Junctions")))
+
+# Bar plot
+ggplot(as_summary_long, aes(x = Species, y = Count, fill = Category)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Alternative Splicing Events Across Species",
+    subtitle = "Comparison of DTU, Exon, and Junction-level evidence",
+    x = "Species",
+    y = "Count",
+    fill = "Evidence Type"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(size = 14, face = "bold"),
+    legend.position = "bottom"
+  ) +
+  scale_fill_brewer(palette = "Set2")
+```
+
+# Save Results
+
+```{r save-results}
+# Save all results to output directory
+
+# Apul
+write_csv(apul_transcript_results, file.path(output_dir, "apul_transcript_DE_results.csv"))
+write_csv(apul_dtu_candidates, file.path(output_dir, "apul_DTU_candidates.csv"))
+write_csv(apul_exon_results, file.path(output_dir, "apul_exon_DE_results.csv"))
+write_csv(apul_exon_sig, file.path(output_dir, "apul_significant_exons.csv"))
+write_csv(apul_junction_results, file.path(output_dir, "apul_junction_DE_results.csv"))
+write_csv(apul_junction_sig, file.path(output_dir, "apul_significant_junctions.csv"))
+write_csv(apul_AS_summary, file.path(output_dir, "apul_AS_gene_summary.csv"))
+
+# Peve
+write_csv(peve_transcript_results, file.path(output_dir, "peve_transcript_DE_results.csv"))
+write_csv(peve_dtu_candidates, file.path(output_dir, "peve_DTU_candidates.csv"))
+write_csv(peve_exon_results, file.path(output_dir, "peve_exon_DE_results.csv"))
+write_csv(peve_exon_sig, file.path(output_dir, "peve_significant_exons.csv"))
+write_csv(peve_junction_results, file.path(output_dir, "peve_junction_DE_results.csv"))
+write_csv(peve_junction_sig, file.path(output_dir, "peve_significant_junctions.csv"))
+write_csv(peve_AS_summary, file.path(output_dir, "peve_AS_gene_summary.csv"))
+
+# Ptua
+write_csv(ptua_transcript_results, file.path(output_dir, "ptua_transcript_DE_results.csv"))
+write_csv(ptua_dtu_candidates, file.path(output_dir, "ptua_DTU_candidates.csv"))
+write_csv(ptua_exon_results, file.path(output_dir, "ptua_exon_DE_results.csv"))
+write_csv(ptua_exon_sig, file.path(output_dir, "ptua_significant_exons.csv"))
+write_csv(ptua_junction_results, file.path(output_dir, "ptua_junction_DE_results.csv"))
+write_csv(ptua_junction_sig, file.path(output_dir, "ptua_significant_junctions.csv"))
+write_csv(ptua_AS_summary, file.path(output_dir, "ptua_AS_gene_summary.csv"))
+
+# Cross-species summary
+write_csv(as_summary, file.path(output_dir, "cross_species_AS_summary.csv"))
+
+cat("All results saved to:", output_dir, "\n")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
+
+# Notes
+
+## Interpretation Guidelines
+
+1. **DTU Candidates**: Genes where multiple transcripts are differentially expressed suggest condition-specific isoform switching.
+
+2. **Significant Exons**: Exons significant independently of whole-gene expression indicate exon skipping or alternative exon events.
+
+3. **Significant Junctions**: Differential intron usage suggests splice site switching events.
+
+4. **Evidence Integration**: Genes with multiple types of evidence (DTU + exon + junction) are high-confidence AS candidates.
+
+## Next Steps
+
+Consider using **IsoformSwitchAnalyzeR** for:
+
+- Visualization of isoform switches
+- Prediction of functional consequences
+- Open reading frame analysis
+- Domain annotation changes
+
