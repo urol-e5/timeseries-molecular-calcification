@@ -10,6 +10,9 @@ This script uses machine learning approaches (Random Forest, Elastic Net) to:
 2. Evaluate model performance using cross-validation
 3. Rank CpGs by their predictive importance
 
+IMPORTANT: Only CpGs within 100bp of each exon are considered as potential
+predictors, ensuring biological relevance of the methylation-expression relationship.
+
 PARALLELIZED VERSION - Uses all available CPUs for model training.
 
 Data Sources:
@@ -79,6 +82,7 @@ TOP_CPGS_PER_EXON = 100  # Top CpGs to select per exon based on univariate corre
 MAX_EXONS_TO_MODEL = 5000  # Maximum number of exons to model (for computational tractability)
 CV_FOLDS = 5  # Number of cross-validation folds
 N_TOP_PREDICTIVE_CPGS = 50  # Number of top predictive CpGs to report per exon
+CPG_DISTANCE_THRESHOLD = 100  # Maximum distance (bp) from exon for CpG to be considered
 
 # Number of CPUs to use (None = all available)
 N_CPUS = None
@@ -177,11 +181,18 @@ def build_predictive_model_for_exon(
     exon_expr: np.ndarray,
     cpg_matrix: np.ndarray,
     cpg_names: np.ndarray,
+    exon_chr: str,
+    exon_start: int,
+    exon_end: int,
+    cpg_chr: np.ndarray,
+    cpg_pos: np.ndarray,
     n_top_cpgs: int = 100,
-    cv_folds: int = 5
+    cv_folds: int = 5,
+    distance_threshold: int = CPG_DISTANCE_THRESHOLD
 ) -> Optional[Dict]:
     """
     Build a predictive model for a single exon using CpG methylation as features.
+    Only considers CpGs within distance_threshold bp of the exon.
     
     Parameters
     ----------
@@ -193,10 +204,22 @@ def build_predictive_model_for_exon(
         CpG methylation matrix (samples x CpGs)
     cpg_names : np.ndarray
         Names of CpG sites
+    exon_chr : str
+        Chromosome of the exon
+    exon_start : int
+        Start position of the exon
+    exon_end : int
+        End position of the exon
+    cpg_chr : np.ndarray
+        Chromosome for each CpG
+    cpg_pos : np.ndarray
+        Position for each CpG
     n_top_cpgs : int
         Number of top CpGs to use based on univariate correlation
     cv_folds : int
         Number of cross-validation folds
+    distance_threshold : int
+        Maximum distance (bp) from exon for CpG to be considered
         
     Returns
     -------
@@ -213,13 +236,28 @@ def build_predictive_model_for_exon(
     if np.std(exon_expr) < MIN_VARIANCE_THRESHOLD:
         return None
     
-    # Filter low variance CpGs
-    var_mask = filter_low_variance_features(cpg_matrix, MIN_VARIANCE_THRESHOLD)
-    if var_mask.sum() < 5:
+    # Filter CpGs to only those within distance_threshold of the exon
+    # CpG must be on same chromosome and within distance_threshold bp of exon boundaries
+    same_chr_mask = cpg_chr == exon_chr
+    within_range_mask = (cpg_pos >= (exon_start - distance_threshold)) & \
+                        (cpg_pos <= (exon_end + distance_threshold))
+    nearby_mask = same_chr_mask & within_range_mask
+    
+    if nearby_mask.sum() < 2:
+        # Not enough nearby CpGs to build a model
         return None
     
-    X_filtered = cpg_matrix[:, var_mask]
-    cpg_names_filtered = cpg_names[var_mask]
+    # Filter to nearby CpGs first
+    cpg_matrix_nearby = cpg_matrix[:, nearby_mask]
+    cpg_names_nearby = cpg_names[nearby_mask]
+    
+    # Filter low variance CpGs
+    var_mask = filter_low_variance_features(cpg_matrix_nearby, MIN_VARIANCE_THRESHOLD)
+    if var_mask.sum() < 2:
+        return None
+    
+    X_filtered = cpg_matrix_nearby[:, var_mask]
+    cpg_names_filtered = cpg_names_nearby[var_mask]
     
     # Pre-filter by univariate correlation to reduce dimensionality
     correlations = compute_univariate_correlations(X_filtered, exon_expr)
@@ -250,6 +288,7 @@ def build_predictive_model_for_exon(
     results = {
         'exon_id': exon_id,
         'n_samples': n_samples,
+        'n_cpgs_nearby': int(nearby_mask.sum()),  # CpGs within distance threshold
         'n_cpgs_tested': len(cpg_names_filtered),
         'n_cpgs_selected': len(cpg_names_selected),
         'cv_method': cv_method,
@@ -363,12 +402,17 @@ def build_predictive_model_for_exon(
 
 def process_exon_wrapper(args: Tuple) -> Optional[Dict]:
     """Wrapper function for parallel processing."""
-    exon_id, exon_expr, cpg_matrix, cpg_names = args
+    exon_id, exon_expr, cpg_matrix, cpg_names, exon_chr, exon_start, exon_end, cpg_chr, cpg_pos = args
     return build_predictive_model_for_exon(
         exon_id=exon_id,
         exon_expr=exon_expr,
         cpg_matrix=cpg_matrix,
         cpg_names=cpg_names,
+        exon_chr=exon_chr,
+        exon_start=exon_start,
+        exon_end=exon_end,
+        cpg_chr=cpg_chr,
+        cpg_pos=cpg_pos,
         n_top_cpgs=TOP_CPGS_PER_EXON,
         cv_folds=CV_FOLDS
     )
@@ -574,12 +618,19 @@ def process_species(species: str, exon_url: str, cpg_url: str, output_dir: Path)
     cpg_matrix = cpg_df_indexed[common_samples].T.values.astype(float)
     cpg_names = cpg_df_indexed.index.values
     
+    # Parse CpG locations (chromosome and position)
+    print(f"  Parsing CpG locations...")
+    cpg_locations = parse_cpg_ids_vectorized(pd.Series(cpg_names))
+    cpg_chr = cpg_locations['cpg_chr'].values
+    cpg_pos = cpg_locations['cpg_pos'].values
+    
     # Handle missing values in CpG matrix (impute with column mean)
     col_means = np.nanmean(cpg_matrix, axis=0)
     nan_mask = np.isnan(cpg_matrix)
     cpg_matrix[nan_mask] = np.take(col_means, np.where(nan_mask)[1])
     
     print(f"  CpG matrix shape: {cpg_matrix.shape}")
+    print(f"  CpGs with valid locations: {(~pd.isna(cpg_pos)).sum()}")
     
     # Exon expression matrix
     exon_expr_matrix = exon_df.set_index('exon_id')[common_samples].T.values.astype(float)
@@ -598,12 +649,22 @@ def process_species(species: str, exon_url: str, cpg_url: str, output_dir: Path)
         exon_expr_matrix = exon_expr_matrix[:, top_var_indices]
         n_exons = MAX_EXONS_TO_MODEL
     
+    # Get exon location info
+    exon_chr_arr = exon_df.set_index('exon_id').loc[exon_ids, 'chr'].values
+    exon_start_arr = exon_df.set_index('exon_id').loc[exon_ids, 'start'].values.astype(int)
+    exon_end_arr = exon_df.set_index('exon_id').loc[exon_ids, 'end'].values.astype(int)
+    
     # Prepare arguments for parallel processing
     print(f"  Building predictive models for {n_exons} exons...")
+    print(f"  Only considering CpGs within {CPG_DISTANCE_THRESHOLD}bp of each exon")
     args_list = []
     for i, exon_id in enumerate(exon_ids):
         exon_expr = exon_expr_matrix[:, i]
-        args_list.append((exon_id, exon_expr, cpg_matrix, cpg_names))
+        args_list.append((
+            exon_id, exon_expr, cpg_matrix, cpg_names,
+            exon_chr_arr[i], exon_start_arr[i], exon_end_arr[i],
+            cpg_chr, cpg_pos
+        ))
     
     # Run models in parallel
     n_workers = get_n_cpus()
@@ -645,6 +706,7 @@ def process_species(species: str, exon_url: str, cpg_url: str, output_dir: Path)
     results_df = pd.DataFrame([{
         'exon_id': r['exon_id'],
         'n_samples': r['n_samples'],
+        'n_cpgs_nearby': r['n_cpgs_nearby'],
         'n_cpgs_tested': r['n_cpgs_tested'],
         'n_cpgs_selected': r['n_cpgs_selected'],
         'cv_method': r['cv_method'],
@@ -720,7 +782,7 @@ def process_species(species: str, exon_url: str, cpg_url: str, output_dir: Path)
     # Print top predictable exons
     print(f"\n  Top 10 Most Predictable Exons:")
     top_exons = results_df.nlargest(10, 'best_r2_cv')
-    print(top_exons[['exon_id', 'best_r2_cv', 'best_model', 'n_cpgs_selected']].to_string(index=False))
+    print(top_exons[['exon_id', 'best_r2_cv', 'best_model', 'n_cpgs_nearby', 'n_cpgs_selected']].to_string(index=False))
     
     return results_df, cpg_summary_df, stats_dict
 

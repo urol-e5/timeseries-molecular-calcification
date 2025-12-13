@@ -1,0 +1,1176 @@
+---
+title: "Hypothesis A-Mod: Calcification Gene Activity and Gene Body Methylation"
+author: "Steven Roberts"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 7)
+```
+
+## Hypothesis Overview
+
+This analysis tests three hypotheses regarding calcification gene activity and gene body methylation (GBM) in three coral species across four timepoints:
+
+**Hypothesis 1**: Genes that change in activity in T2 and T3 compared to T1 and T4 will have low gene body methylation.
+
+**Hypothesis 2**: Genes that are highly expressed in T2 and T3 with high GBM overall will have higher GBM at T2 and T3.
+
+**Hypothesis 3**: Genes that have high gene expression variability based on exon level expression at T2 and T3 will have differential GBM.
+
+### Study Design
+
+- **Species**: Acropora pulchra, Porites evermanni, Pocillopora tuahiniensis
+- **Timepoints**: TP1 (baseline), TP2 (warmest/stress), TP3 (recovery), TP4 (control)
+- **Comparisons**: T1→T2, T1→T3, T4→T2, T4→T3
+
+---
+
+## Setup and Libraries
+
+```{r libraries}
+library(tidyverse)
+library(pheatmap)
+library(RColorBrewer)
+library(viridis)
+library(ggpubr)
+library(cowplot)
+library(broom)
+library(scales)
+
+# Set theme
+theme_set(theme_minimal(base_size = 12))
+
+# Species lookup
+species_lookup <- c(
+  apul = "Acropora pulchra",
+  peve = "Porites evermanni",
+  ptua = "Pocillopora tuahiniensis"
+)
+
+# Color palette for species
+species_colors <- c(
+  "Acropora pulchra" = "#E64B35",
+  "Porites evermanni" = "#4DBBD5",
+  "Pocillopora tuahiniensis" = "#00A087"
+)
+
+# Timepoint colors
+tp_colors <- c("TP1" = "#2166AC", "TP2" = "#D6604D", "TP3" = "#4393C3", "TP4" = "#92C5DE")
+
+# Comparison colors
+comparison_colors <- c(
+  "T1_to_T2" = "#E64B35",
+  "T1_to_T3" = "#F39B7F",
+  "T4_to_T2" = "#4DBBD5",
+  "T4_to_T3" = "#91D1C2"
+)
+```
+
+```{r output-dir}
+output_dir <- "../output/52-HypA-mod-calcification"
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+---
+
+## Load Data
+
+### Expression Matrices for Calcification Genes
+
+```{r load-expression}
+# Load biomineralization gene expression counts
+apul_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/apul_biomin_counts.csv",
+                        show_col_types = FALSE)
+
+peve_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/peve_biomin_counts.csv",
+                        show_col_types = FALSE)
+
+ptua_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/ptua_biomin_counts.csv",
+                        show_col_types = FALSE)
+
+cat("Biomin genes loaded:\n")
+cat("  Apul:", nrow(apul_biomin), "genes\n")
+cat("  Peve:", nrow(peve_biomin), "genes\n")
+cat("  Ptua:", nrow(ptua_biomin), "genes\n")
+```
+
+### Gene Body Methylation Data
+
+```{r load-methylation}
+# Acropora pulchra methylation
+apul_meth <- read_tsv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/D-Apul/output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv",
+                      show_col_types = FALSE)
+
+# Porites evermanni methylation
+peve_meth <- read_tsv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/E-Peve/output/15-Peve-Gene-Methylation/Peve-gene-methylation_75pct.tsv",
+                      show_col_types = FALSE)
+
+# Pocillopora tuahiniensis methylation
+ptua_meth <- read_tsv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/F-Ptua/output/09-Ptua-Gene-Methylation/Ptua-gene-methylation_75pct.tsv",
+                      show_col_types = FALSE)
+
+cat("Methylation data loaded:\n")
+cat("  Apul:", nrow(apul_meth), "genes\n")
+cat("  Peve:", nrow(peve_meth), "genes\n")
+cat("  Ptua:", nrow(ptua_meth), "genes\n")
+```
+
+### Annotation File
+
+```{r load-annotation}
+ortholog_annot <- read_csv("../output/12-ortho-annot/ortholog_groups_annotated.csv",
+                           show_col_types = FALSE)
+```
+
+### Exon-Level Expression Data
+
+```{r load-exon-data}
+# Exon count matrices for expression variability analysis
+apul_exon_counts <- read_csv("../output/40-exon-count-matrix/apul-exon_gene_count_matrix.csv",
+                              show_col_types = FALSE)
+
+peve_exon_counts <- read_csv("../output/40-exon-count-matrix/peve-exon_gene_count_matrix.csv",
+                              show_col_types = FALSE)
+
+ptua_exon_counts <- read_csv("../output/40-exon-count-matrix/ptua-exon_gene_count_matrix.csv",
+                              show_col_types = FALSE)
+
+cat("Exon data loaded:\n")
+cat("  Apul:", nrow(apul_exon_counts), "exons\n")
+cat("  Peve:", nrow(peve_exon_counts), "exons\n")
+cat("  Ptua:", nrow(ptua_exon_counts), "exons\n")
+```
+
+---
+
+## Data Wrangling
+
+### Reshape Expression Data
+
+```{r reshape-expression}
+# Function to reshape expression data to long format
+reshape_expression <- function(df, species_code) {
+  df %>%
+    pivot_longer(
+      cols = -c(group_id, gene_id),
+      names_to = "sample_id",
+      values_to = "count"
+    ) %>%
+    mutate(
+      species_code = species_code,
+      colony_id = str_remove(sample_id, "-TP\\d+$"),
+      timepoint = str_extract(sample_id, "TP\\d+"),
+      timepoint_num = parse_number(timepoint),
+      log_count = log2(count + 1)
+    )
+}
+
+# Reshape all species
+expr_long <- bind_rows(
+  reshape_expression(apul_biomin, "apul"),
+  reshape_expression(peve_biomin, "peve"),
+  reshape_expression(ptua_biomin, "ptua")
+) %>%
+  mutate(species = species_lookup[species_code])
+
+cat("Expression data reshaped:", nrow(expr_long), "observations\n")
+```
+
+### Reshape Methylation Data
+
+```{r reshape-methylation}
+# Function to reshape methylation data
+reshape_methylation <- function(df, species_code) {
+  df %>%
+    pivot_longer(
+      cols = -gene_id,
+      names_to = "sample_id",
+      values_to = "methylation"
+    ) %>%
+    mutate(
+      species_code = species_code,
+      gene_id_clean = str_remove(gene_id, "^gene-"),
+      colony_id = str_remove(sample_id, "-TP\\d+$"),
+      timepoint = str_extract(sample_id, "TP\\d+"),
+      timepoint_num = parse_number(timepoint)
+    )
+}
+
+# Reshape all species methylation
+meth_long <- bind_rows(
+  reshape_methylation(apul_meth, "apul"),
+  reshape_methylation(peve_meth, "peve"),
+  reshape_methylation(ptua_meth, "ptua")
+) %>%
+  mutate(species = species_lookup[species_code])
+
+cat("Methylation data reshaped:", nrow(meth_long), "observations\n")
+```
+
+### Identify Biomineralization Genes
+
+```{r biomin-gene-ids}
+# Get unique biomineralization gene IDs for each species
+biomin_genes <- list(
+  apul = unique(apul_biomin$gene_id),
+  peve = unique(peve_biomin$gene_id),
+  ptua = unique(ptua_biomin$gene_id)
+)
+
+biomin_orthogroups <- unique(c(apul_biomin$group_id, peve_biomin$group_id, ptua_biomin$group_id))
+
+cat("Biomineralization genes per species:\n")
+sapply(biomin_genes, length) %>% print()
+cat("\nTotal unique orthogroups:", length(biomin_orthogroups), "\n")
+```
+
+### Filter Methylation to Biomin Genes
+
+```{r filter-biomin-methylation}
+# Filter methylation data to biomineralization genes
+biomin_meth <- meth_long %>%
+  filter(
+    (species_code == "apul" & gene_id_clean %in% biomin_genes$apul) |
+    (species_code == "peve" & gene_id_clean %in% biomin_genes$peve) |
+    (species_code == "ptua" & gene_id_clean %in% biomin_genes$ptua)
+  )
+
+cat("Biomin genes with methylation data:\n")
+biomin_meth %>%
+  group_by(species_code) %>%
+  summarise(n_genes = n_distinct(gene_id_clean)) %>%
+  print()
+```
+
+---
+
+## Analysis 1: Gene Expression Changes Across Timepoints
+
+### Calculate Mean Expression by Timepoint
+
+```{r expr-by-timepoint}
+# Calculate mean expression per gene per timepoint
+expr_by_tp <- expr_long %>%
+  group_by(species_code, species, group_id, gene_id, timepoint) %>%
+  summarise(
+    mean_count = mean(count, na.rm = TRUE),
+    mean_log = mean(log_count, na.rm = TRUE),
+    sd_count = sd(count, na.rm = TRUE),
+    n_samples = n(),
+    .groups = "drop"
+  )
+
+head(expr_by_tp)
+```
+
+### Calculate Expression Changes (Fold Changes)
+
+```{r calculate-fold-changes}
+# Pivot to wide format for comparison calculations
+expr_wide <- expr_by_tp %>%
+  select(species_code, species, group_id, gene_id, timepoint, mean_log) %>%
+  pivot_wider(names_from = timepoint, values_from = mean_log, names_prefix = "")
+
+# Calculate fold changes for each comparison
+expr_fc <- expr_wide %>%
+  mutate(
+    # Fold changes (log2 difference = log2 fold change)
+    fc_T1_to_T2 = TP2 - TP1,
+    fc_T1_to_T3 = TP3 - TP1,
+    fc_T4_to_T2 = TP2 - TP4,
+    fc_T4_to_T3 = TP3 - TP4,
+    # Mean expression
+    mean_expr = (TP1 + TP2 + TP3 + TP4) / 4,
+    # Stress response (T2+T3 vs T1+T4)
+    stress_response = ((TP2 + TP3) / 2) - ((TP1 + TP4) / 2)
+  ) %>%
+  filter(!is.na(fc_T1_to_T2))
+
+# Summary of fold changes
+cat("Fold change statistics (log2):\n")
+expr_fc %>%
+  group_by(species_code) %>%
+  summarise(
+    across(starts_with("fc_"), list(mean = ~mean(., na.rm = TRUE), 
+                                    sd = ~sd(., na.rm = TRUE)),
+           .names = "{.col}_{.fn}")
+  ) %>%
+  print()
+```
+
+### Identify Significantly Changed Genes
+
+```{r identify-changed-genes}
+# Define threshold for "changed" genes (|log2FC| > 1 = 2-fold change)
+fc_threshold <- 1
+
+# Identify genes with significant changes
+changed_genes <- expr_fc %>%
+  mutate(
+    changed_T1_T2 = abs(fc_T1_to_T2) > fc_threshold,
+    changed_T1_T3 = abs(fc_T1_to_T3) > fc_threshold,
+    changed_T4_T2 = abs(fc_T4_to_T2) > fc_threshold,
+    changed_T4_T3 = abs(fc_T4_to_T3) > fc_threshold,
+    any_stress_change = changed_T1_T2 | changed_T1_T3 | changed_T4_T2 | changed_T4_T3,
+    # Direction of change (up in stress timepoints)
+    up_in_stress = stress_response > fc_threshold,
+    down_in_stress = stress_response < -fc_threshold
+  )
+
+# Summary of changed genes
+cat("\nGenes with |log2FC| > 1 per comparison:\n")
+changed_genes %>%
+  group_by(species_code, species) %>%
+  summarise(
+    T1_to_T2 = sum(changed_T1_T2, na.rm = TRUE),
+    T1_to_T3 = sum(changed_T1_T3, na.rm = TRUE),
+    T4_to_T2 = sum(changed_T4_T2, na.rm = TRUE),
+    T4_to_T3 = sum(changed_T4_T3, na.rm = TRUE),
+    any_change = sum(any_stress_change, na.rm = TRUE),
+    total_genes = n(),
+    .groups = "drop"
+  ) %>%
+  print()
+```
+
+### Visualization: Expression Fold Changes
+
+```{r expr-fc-heatmap, fig.height=8, fig.width=12}
+# Prepare data for heatmap
+fc_matrix_data <- expr_fc %>%
+  select(species_code, gene_id, fc_T1_to_T2, fc_T1_to_T3, fc_T4_to_T2, fc_T4_to_T3) %>%
+  pivot_longer(cols = starts_with("fc_"), names_to = "comparison", values_to = "log2fc")
+
+# Boxplot of fold changes by species and comparison
+p_fc <- ggplot(fc_matrix_data, aes(x = comparison, y = log2fc, fill = species_lookup[species_code])) +
+  geom_boxplot(alpha = 0.7, position = position_dodge(width = 0.8)) +
+  geom_hline(yintercept = c(-1, 0, 1), linetype = c("dashed", "solid", "dashed"), 
+             color = c("red", "gray50", "red"), alpha = 0.5) +
+  scale_fill_manual(values = species_colors, name = "Species") +
+  scale_x_discrete(labels = c("T1→T2", "T1→T3", "T4→T2", "T4→T3")) +
+  labs(
+    title = "Expression Fold Changes in Calcification Genes",
+    subtitle = "Comparing baseline (T1, T4) to stress/recovery (T2, T3)",
+    x = "Comparison",
+    y = "Log2 Fold Change"
+  ) +
+  theme(legend.text = element_text(face = "italic"),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+p_fc
+ggsave(file.path(output_dir, "expr_fold_changes.png"), p_fc, width = 12, height = 8, dpi = 300)
+```
+
+---
+
+## Analysis 2: Exon-Level Expression Variability
+
+### Calculate Exon Variability by Gene and Timepoint
+
+```{r exon-variability}
+# Load exon summary files to get gene_id -> group_id mapping
+apul_exon_mapping <- read_csv("../output/40-exon-count-matrix/apul-exon_summary_by_ortholog.csv",
+                              show_col_types = FALSE) %>%
+  select(gene_id, group_id) %>%
+  distinct() %>%
+  mutate(gene_id_clean = str_remove(gene_id, "^gene-"))
+
+peve_exon_mapping <- read_csv("../output/40-exon-count-matrix/peve-exon_summary_by_ortholog.csv",
+                              show_col_types = FALSE) %>%
+  select(gene_id, group_id) %>%
+  distinct() %>%
+  mutate(gene_id_clean = str_remove(gene_id, "^gene-"))
+
+ptua_exon_mapping <- read_csv("../output/40-exon-count-matrix/ptua-exon_summary_by_ortholog.csv",
+                              show_col_types = FALSE) %>%
+  select(gene_id, group_id) %>%
+  distinct() %>%
+  mutate(gene_id_clean = str_remove(gene_id, "^gene-"))
+
+# Function to calculate exon variability by timepoint using group_id for matching
+calculate_exon_variability_v2 <- function(exon_df, biomin_df, exon_mapping, species_code) {
+  # Get biomin ortholog groups
+  biomin_groups <- unique(biomin_df$group_id)
+  
+  # Clean gene IDs in exon data
+  exon_df <- exon_df %>%
+    mutate(gene_id_clean = str_remove(gene_id, "^gene-"))
+  
+  # Add group_id mapping to exon data
+  exon_df <- exon_df %>%
+    left_join(exon_mapping %>% select(gene_id_clean, group_id), by = "gene_id_clean")
+  
+  # Filter to biomin genes using ortholog groups
+  exon_biomin <- exon_df %>%
+    filter(group_id %in% biomin_groups)
+  
+  cat(sprintf("  %s: %d exons matched via %d ortholog groups\n", 
+              species_code, nrow(exon_biomin), n_distinct(exon_biomin$group_id)))
+  
+  if(nrow(exon_biomin) == 0) {
+    cat(sprintf("    WARNING: No matches found for %s\n", species_code))
+    return(tibble())
+  }
+  
+  # Get sample columns
+  sample_cols <- names(exon_df)[!names(exon_df) %in% c("gene_id", "gene_id_clean", "group_id", "e_id", "chr", "strand", "start", "end")]
+  
+  # Reshape to long format
+  exon_long <- exon_biomin %>%
+    select(gene_id_clean, group_id, e_id, all_of(sample_cols)) %>%
+    pivot_longer(cols = all_of(sample_cols), names_to = "sample_id", values_to = "count") %>%
+    mutate(
+      timepoint = str_extract(sample_id, "TP\\d+"),
+      log_count = log2(count + 1)
+    )
+  
+  # Calculate CV of exon expression within each gene per timepoint
+  exon_cv_by_tp <- exon_long %>%
+    group_by(gene_id = gene_id_clean, group_id, timepoint, sample_id) %>%
+    summarise(
+      n_exons = n(),
+      mean_exon_expr = mean(log_count, na.rm = TRUE),
+      sd_exon_expr = sd(log_count, na.rm = TRUE),
+      cv_exon = sd_exon_expr / mean_exon_expr,
+      .groups = "drop"
+    ) %>%
+    filter(!is.na(cv_exon) & is.finite(cv_exon) & n_exons >= 2)
+  
+  # Average CV across samples within each timepoint
+  exon_cv_summary <- exon_cv_by_tp %>%
+    group_by(gene_id, group_id, timepoint) %>%
+    summarise(
+      mean_cv_exon = mean(cv_exon, na.rm = TRUE),
+      sd_cv_exon = sd(cv_exon, na.rm = TRUE),
+      n_samples = n(),
+      .groups = "drop"
+    ) %>%
+    mutate(species_code = species_code)
+  
+  return(exon_cv_summary)
+}
+
+# Calculate for each species using ortholog group matching
+cat("Calculating exon variability by species (using ortholog groups):\n")
+apul_exon_cv <- calculate_exon_variability_v2(apul_exon_counts, apul_biomin, apul_exon_mapping, "apul")
+peve_exon_cv <- calculate_exon_variability_v2(peve_exon_counts, peve_biomin, peve_exon_mapping, "peve")
+ptua_exon_cv <- calculate_exon_variability_v2(ptua_exon_counts, ptua_biomin, ptua_exon_mapping, "ptua")
+
+exon_cv_all <- bind_rows(apul_exon_cv, peve_exon_cv, ptua_exon_cv) %>%
+  mutate(species = species_lookup[species_code])
+
+cat("\nExon variability summary by species:\n")
+exon_cv_all %>%
+  group_by(species_code) %>%
+  summarise(n_genes = n_distinct(gene_id), n_groups = n_distinct(group_id), n_records = n()) %>%
+  print()
+```
+
+### Calculate Exon Variability Change
+
+```{r exon-variability-change}
+# Pivot to wide format for comparison
+exon_cv_wide <- exon_cv_all %>%
+  select(species_code, species, gene_id, group_id, timepoint, mean_cv_exon) %>%
+  pivot_wider(names_from = timepoint, values_from = mean_cv_exon, names_prefix = "cv_")
+
+# Calculate variability changes
+exon_var_change <- exon_cv_wide %>%
+  mutate(
+    delta_cv_T1_T2 = cv_TP2 - cv_TP1,
+    delta_cv_T1_T3 = cv_TP3 - cv_TP1,
+    delta_cv_T4_T2 = cv_TP2 - cv_TP4,
+    delta_cv_T4_T3 = cv_TP3 - cv_TP4,
+    # Overall variability
+    mean_cv = (cv_TP1 + cv_TP2 + cv_TP3 + cv_TP4) / 4,
+    # Stress vs baseline variability
+    stress_variability = ((cv_TP2 + cv_TP3) / 2) - ((cv_TP1 + cv_TP4) / 2)
+  ) %>%
+  filter(!is.na(delta_cv_T1_T2))
+
+# Summary
+cat("\nExon variability change summary:\n")
+exon_var_change %>%
+  group_by(species_code) %>%
+  summarise(
+    mean_stress_var_change = mean(stress_variability, na.rm = TRUE),
+    sd_stress_var_change = sd(stress_variability, na.rm = TRUE),
+    n_genes = n(),
+    .groups = "drop"
+  ) %>%
+  print()
+```
+
+### Visualization: Exon Variability by Timepoint
+
+```{r exon-var-plot, fig.height=8, fig.width=12}
+# Boxplot of exon variability by timepoint and species
+p_exon_var <- ggplot(exon_cv_all, aes(x = timepoint, y = mean_cv_exon, fill = species)) +
+  geom_boxplot(alpha = 0.7, position = position_dodge(width = 0.8)) +
+  scale_fill_manual(values = species_colors) +
+  facet_wrap(~species, scales = "free_y") +
+  labs(
+    title = "Exon-Level Expression Variability by Timepoint",
+    subtitle = "CV of exon expression within genes (proxy for alternative splicing)",
+    x = "Timepoint",
+    y = "Mean CV (Exon Expression)"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "italic"))
+
+p_exon_var
+ggsave(file.path(output_dir, "exon_variability_by_tp.png"), p_exon_var, width = 12, height = 8, dpi = 300)
+```
+
+---
+
+## Analysis 3: Gene Body Methylation by Timepoint
+
+### Calculate GBM by Timepoint
+
+```{r gbm-by-timepoint}
+# First, add group_id to biomin_meth by joining with biomin counts
+# Create gene_id to group_id mapping from biomin counts
+biomin_gene_group_map <- bind_rows(
+  apul_biomin %>% select(gene_id, group_id) %>% mutate(species_code = "apul"),
+  peve_biomin %>% select(gene_id, group_id) %>% mutate(species_code = "peve"),
+  ptua_biomin %>% select(gene_id, group_id) %>% mutate(species_code = "ptua")
+)
+
+# Add group_id to biomin_meth
+biomin_meth_grouped <- biomin_meth %>%
+  left_join(biomin_gene_group_map, by = c("species_code", "gene_id_clean" = "gene_id"))
+
+cat("Biomin meth with group_id:\n")
+biomin_meth_grouped %>%
+  group_by(species_code) %>%
+  summarise(n_with_group = sum(!is.na(group_id)), n_total = n()) %>%
+  print()
+
+# Calculate mean GBM per gene per timepoint
+gbm_by_tp <- biomin_meth_grouped %>%
+  filter(!is.na(methylation)) %>%
+  group_by(species_code, species, gene_id_clean, group_id, timepoint) %>%
+  summarise(
+    mean_meth = mean(methylation, na.rm = TRUE),
+    sd_meth = sd(methylation, na.rm = TRUE),
+    n_samples = n(),
+    .groups = "drop"
+  )
+
+# Pivot to wide format
+gbm_wide <- gbm_by_tp %>%
+  select(species_code, species, gene_id_clean, group_id, timepoint, mean_meth) %>%
+  pivot_wider(names_from = timepoint, values_from = mean_meth, names_prefix = "meth_")
+
+# Calculate GBM changes and overall levels
+gbm_analysis <- gbm_wide %>%
+  mutate(
+    # GBM changes
+    delta_meth_T1_T2 = meth_TP2 - meth_TP1,
+    delta_meth_T1_T3 = meth_TP3 - meth_TP1,
+    delta_meth_T4_T2 = meth_TP2 - meth_TP4,
+    delta_meth_T4_T3 = meth_TP3 - meth_TP4,
+    # Overall GBM level
+    mean_gbm = (meth_TP1 + meth_TP2 + meth_TP3 + meth_TP4) / 4,
+    # Stress timepoint GBM
+    stress_gbm = (meth_TP2 + meth_TP3) / 2,
+    baseline_gbm = (meth_TP1 + meth_TP4) / 2,
+    # GBM change in stress vs baseline
+    gbm_stress_change = stress_gbm - baseline_gbm
+  ) %>%
+  filter(!is.na(mean_gbm))
+
+cat("GBM analysis genes per species:\n")
+gbm_analysis %>%
+  group_by(species_code) %>%
+  summarise(n_genes = n(), n_with_group = sum(!is.na(group_id))) %>%
+  print()
+```
+
+### Define High vs Low GBM Genes
+
+```{r define-gbm-categories}
+# Classify genes by overall GBM level (median split)
+gbm_classified <- gbm_analysis %>%
+  group_by(species_code) %>%
+  mutate(
+    gbm_median = median(mean_gbm, na.rm = TRUE),
+    gbm_category = ifelse(mean_gbm >= gbm_median, "High GBM", "Low GBM")
+  ) %>%
+  ungroup()
+
+cat("\nGBM classification summary:\n")
+gbm_classified %>%
+  group_by(species_code, gbm_category) %>%
+  summarise(
+    n_genes = n(),
+    mean_gbm = mean(mean_gbm, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  print()
+```
+
+---
+
+## Hypothesis 1: Changed Genes Have Low GBM
+
+### Merge Expression Changes with GBM Data
+
+```{r merge-expr-gbm-h1}
+# Merge expression fold change data with GBM data
+expr_gbm_merged <- changed_genes %>%
+  inner_join(gbm_classified, 
+             by = c("species_code", "gene_id" = "gene_id_clean"))
+
+cat("Merged expression-GBM data:\n")
+expr_gbm_merged %>%
+  group_by(species_code) %>%
+  summarise(n_genes = n()) %>%
+  print()
+```
+
+### Test H1: Compare GBM Between Changed and Unchanged Genes
+
+```{r test-h1}
+# Compare mean GBM between changed and unchanged genes
+h1_comparison <- expr_gbm_merged %>%
+  group_by(species_code, any_stress_change) %>%
+  summarise(
+    n_genes = n(),
+    mean_gbm = mean(mean_gbm, na.rm = TRUE),
+    sd_gbm = sd(mean_gbm, na.rm = TRUE),
+    median_gbm = median(mean_gbm, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+cat("\n=== HYPOTHESIS 1 RESULTS ===\n")
+cat("Mean GBM by gene change status:\n")
+print(h1_comparison)
+
+# Statistical tests by species
+h1_tests <- expr_gbm_merged %>%
+  group_by(species_code) %>%
+  summarise(
+    wilcox_p = wilcox.test(mean_gbm ~ any_stress_change)$p.value,
+    changed_mean_gbm = mean(mean_gbm[any_stress_change], na.rm = TRUE),
+    unchanged_mean_gbm = mean(mean_gbm[!any_stress_change], na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    h1_supported = changed_mean_gbm < unchanged_mean_gbm,
+    interpretation = ifelse(h1_supported, "SUPPORTED: Changed genes have lower GBM",
+                           "NOT SUPPORTED: Changed genes have similar/higher GBM")
+  )
+
+cat("\nStatistical tests:\n")
+print(h1_tests)
+```
+
+### Visualization: H1 - GBM in Changed vs Unchanged Genes
+
+```{r h1-plot, fig.height=8, fig.width=12}
+p_h1 <- ggplot(expr_gbm_merged, aes(x = any_stress_change, y = mean_gbm, fill = species.x)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_jitter(width = 0.2, alpha = 0.3, size = 1) +
+  scale_fill_manual(values = species_colors, name = "Species") +
+  scale_x_discrete(labels = c("FALSE" = "Unchanged", "TRUE" = "Changed")) +
+  facet_wrap(~species.x, scales = "free_y") +
+  labs(
+    title = "Hypothesis 1: Gene Body Methylation in Changed vs Unchanged Genes",
+    subtitle = "Changed = |log2FC| > 1 in any stress comparison (T1→T2, T1→T3, T4→T2, T4→T3)",
+    x = "Gene Expression Changed",
+    y = "Mean Gene Body Methylation (%)"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "italic"))
+
+p_h1
+ggsave(file.path(output_dir, "h1_gbm_changed_vs_unchanged.png"), p_h1, width = 12, height = 8, dpi = 300)
+```
+
+---
+
+## Hypothesis 2: High Expression + High GBM = Higher GBM at Stress Timepoints
+
+### Identify High Expression Genes at Stress Timepoints
+
+```{r identify-high-expr-stress}
+# Identify genes with high expression at stress timepoints (T2, T3)
+high_expr_stress <- expr_fc %>%
+  group_by(species_code) %>%
+  mutate(
+    stress_expr = (TP2 + TP3) / 2,
+    stress_expr_median = median(stress_expr, na.rm = TRUE),
+    high_stress_expr = stress_expr >= stress_expr_median
+  ) %>%
+  ungroup()
+
+cat("High stress expression genes per species:\n")
+high_expr_stress %>%
+  group_by(species_code, high_stress_expr) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  print()
+```
+
+### Test H2: High Expr + High GBM → Higher Stress GBM?
+
+```{r test-h2}
+# Merge with GBM data
+h2_data <- high_expr_stress %>%
+  inner_join(gbm_classified, by = c("species_code", "gene_id" = "gene_id_clean")) %>%
+  mutate(
+    category = case_when(
+      high_stress_expr & gbm_category == "High GBM" ~ "High Expr + High GBM",
+      high_stress_expr & gbm_category == "Low GBM" ~ "High Expr + Low GBM",
+      !high_stress_expr & gbm_category == "High GBM" ~ "Low Expr + High GBM",
+      TRUE ~ "Low Expr + Low GBM"
+    )
+  )
+
+# Compare stress GBM by category
+h2_comparison <- h2_data %>%
+  group_by(species_code, category) %>%
+  summarise(
+    n_genes = n(),
+    mean_stress_gbm = mean(stress_gbm, na.rm = TRUE),
+    mean_baseline_gbm = mean(baseline_gbm, na.rm = TRUE),
+    mean_gbm_change = mean(gbm_stress_change, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+cat("\n=== HYPOTHESIS 2 RESULTS ===\n")
+cat("GBM at stress timepoints by expression and overall GBM category:\n")
+print(h2_comparison)
+
+# Focus on High Expr + High GBM genes
+h2_focus <- h2_data %>%
+  filter(category == "High Expr + High GBM") %>%
+  group_by(species_code) %>%
+  summarise(
+    n_genes = n(),
+    mean_stress_gbm = mean(stress_gbm, na.rm = TRUE),
+    mean_baseline_gbm = mean(baseline_gbm, na.rm = TRUE),
+    gbm_increase = mean(gbm_stress_change, na.rm = TRUE),
+    pct_increase = gbm_increase / mean_baseline_gbm * 100,
+    t_test_p = t.test(stress_gbm, baseline_gbm, paired = TRUE)$p.value,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    h2_supported = gbm_increase > 0,
+    interpretation = ifelse(h2_supported, 
+                           "SUPPORTED: Higher GBM at stress timepoints",
+                           "NOT SUPPORTED: No increase in GBM at stress timepoints")
+  )
+
+cat("\nHigh Expr + High GBM genes - stress vs baseline GBM:\n")
+print(h2_focus)
+```
+
+### Visualization: H2
+
+```{r h2-plot, fig.height=10, fig.width=14}
+# Reshape for paired comparison visualization
+h2_plot_data <- h2_data %>%
+  filter(category == "High Expr + High GBM") %>%
+  select(species_code, gene_id, stress_gbm, baseline_gbm) %>%
+  pivot_longer(cols = c(stress_gbm, baseline_gbm), 
+               names_to = "period", values_to = "gbm") %>%
+  mutate(
+    period = ifelse(period == "stress_gbm", "Stress (T2+T3)", "Baseline (T1+T4)"),
+    species = species_lookup[species_code]
+  )
+
+p_h2 <- ggplot(h2_plot_data, aes(x = period, y = gbm, fill = period)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_jitter(width = 0.2, alpha = 0.3, size = 1) +
+  scale_fill_manual(values = c("Baseline (T1+T4)" = "#4393C3", "Stress (T2+T3)" = "#D6604D")) +
+  facet_wrap(~species, scales = "free_y") +
+  labs(
+    title = "Hypothesis 2: GBM in High Expression + High GBM Genes",
+    subtitle = "Comparing baseline (T1+T4) to stress (T2+T3) timepoints",
+    x = "Period",
+    y = "Mean Gene Body Methylation (%)"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "italic"))
+
+p_h2
+ggsave(file.path(output_dir, "h2_high_expr_high_gbm.png"), p_h2, width = 14, height = 10, dpi = 300)
+```
+
+---
+
+## Hypothesis 3: High Exon Variability at Stress → Differential GBM
+
+### Identify High Variability Genes at Stress Timepoints
+
+```{r identify-high-var-stress}
+# Calculate stress timepoint exon variability (using group_id for matching)
+stress_exon_var <- exon_cv_all %>%
+  filter(timepoint %in% c("TP2", "TP3")) %>%
+  group_by(species_code, gene_id, group_id) %>%
+  summarise(
+    mean_stress_cv = mean(mean_cv_exon, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Identify high variability genes (top quartile)
+high_var_genes <- stress_exon_var %>%
+  group_by(species_code) %>%
+  mutate(
+    cv_q75 = quantile(mean_stress_cv, 0.75, na.rm = TRUE),
+    high_var = mean_stress_cv >= cv_q75
+  ) %>%
+  ungroup()
+
+cat("High exon variability genes at stress timepoints:\n")
+high_var_genes %>%
+  group_by(species_code, high_var) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  print()
+```
+
+### Test H3: High Variability → Differential GBM
+
+```{r test-h3}
+# Merge with GBM change data using group_id (ortholog group)
+h3_data <- high_var_genes %>%
+  filter(!is.na(group_id)) %>%
+  inner_join(
+    gbm_analysis %>% filter(!is.na(group_id)), 
+    by = c("species_code", "group_id")
+  ) %>%
+  mutate(
+    abs_gbm_change = abs(gbm_stress_change),
+    species = species_lookup[species_code]
+  )
+
+cat("H3 data available by species:\n")
+h3_data %>%
+  group_by(species_code) %>%
+  summarise(n_genes = n(), n_high_var = sum(high_var), n_low_var = sum(!high_var)) %>%
+  print()
+
+# Compare GBM change magnitude between high and low variability genes
+h3_comparison <- h3_data %>%
+  group_by(species_code, species, high_var) %>%
+  summarise(
+    n_genes = n(),
+    mean_abs_gbm_change = mean(abs_gbm_change, na.rm = TRUE),
+    sd_abs_gbm_change = sd(abs_gbm_change, na.rm = TRUE),
+    mean_gbm_change = mean(gbm_stress_change, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+cat("\n=== HYPOTHESIS 3 RESULTS ===\n")
+cat("GBM change magnitude by exon variability category:\n")
+print(h3_comparison)
+
+# Statistical tests - handle each species separately to avoid errors
+run_h3_test <- function(data, sp_code) {
+  sp_data <- data %>% filter(species_code == sp_code)
+  
+  if(nrow(sp_data) == 0 || sum(sp_data$high_var) < 3 || sum(!sp_data$high_var) < 3) {
+    return(tibble(
+      species_code = sp_code,
+      wilcox_p = NA_real_,
+      high_var_mean_change = NA_real_,
+      low_var_mean_change = NA_real_,
+      h3_supported = NA,
+      interpretation = "INSUFFICIENT DATA: Not enough genes with exon variability data"
+    ))
+  }
+  
+  test_result <- tryCatch({
+    wilcox.test(abs_gbm_change ~ high_var, data = sp_data)$p.value
+  }, error = function(e) NA_real_)
+  
+  tibble(
+    species_code = sp_code,
+    wilcox_p = test_result,
+    high_var_mean_change = mean(sp_data$abs_gbm_change[sp_data$high_var], na.rm = TRUE),
+    low_var_mean_change = mean(sp_data$abs_gbm_change[!sp_data$high_var], na.rm = TRUE)
+  ) %>%
+    mutate(
+      h3_supported = high_var_mean_change > low_var_mean_change,
+      interpretation = case_when(
+        is.na(h3_supported) ~ "INSUFFICIENT DATA",
+        h3_supported ~ "SUPPORTED: High variability genes show more differential GBM",
+        TRUE ~ "NOT SUPPORTED: No difference in GBM changes"
+      )
+    )
+}
+
+# Run tests for all species (even if some have no data)
+h3_tests <- bind_rows(
+  run_h3_test(h3_data, "apul"),
+  run_h3_test(h3_data, "peve"),
+  run_h3_test(h3_data, "ptua")
+)
+
+cat("\nStatistical tests:\n")
+print(h3_tests)
+
+# Show why some species might be missing
+cat("\nNote: Species may lack H3 data due to gene ID mismatches between exon and biomin datasets.\n")
+```
+
+### Visualization: H3
+
+```{r h3-plot, fig.height=8, fig.width=12}
+p_h3 <- ggplot(h3_data, aes(x = high_var, y = abs_gbm_change, fill = species)) +
+  geom_boxplot(alpha = 0.7) +
+  geom_jitter(width = 0.2, alpha = 0.3, size = 1) +
+  scale_fill_manual(values = species_colors) +
+  scale_x_discrete(labels = c("FALSE" = "Low Variability", "TRUE" = "High Variability")) +
+  facet_wrap(~species, scales = "free_y") +
+  labs(
+    title = "Hypothesis 3: GBM Change in High vs Low Exon Variability Genes",
+    subtitle = "Absolute GBM change (stress vs baseline) by exon expression variability at T2+T3",
+    x = "Exon Expression Variability (at T2+T3)",
+    y = "|Δ Gene Body Methylation| (%)"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "italic"))
+
+p_h3
+ggsave(file.path(output_dir, "h3_exon_var_gbm_change.png"), p_h3, width = 12, height = 8, dpi = 300)
+```
+
+### Correlation: Exon Variability vs GBM Change
+
+```{r h3-correlation, fig.height=8, fig.width=12}
+# Scatter plot of exon variability vs GBM change
+p_h3_cor <- ggplot(h3_data, aes(x = mean_stress_cv, y = abs_gbm_change, color = species)) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_smooth(method = "lm", se = TRUE, alpha = 0.2) +
+  scale_color_manual(values = species_colors) +
+  facet_wrap(~species, scales = "free") +
+  labs(
+    title = "Exon Expression Variability vs GBM Change Magnitude",
+    subtitle = "Testing correlation between regulatory flexibility and epigenetic dynamics",
+    x = "Mean Exon CV (at T2+T3)",
+    y = "|Δ Gene Body Methylation| (%)"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "italic"))
+
+p_h3_cor
+ggsave(file.path(output_dir, "h3_exon_var_gbm_correlation.png"), p_h3_cor, width = 12, height = 8, dpi = 300)
+
+# Calculate correlations
+h3_correlations <- h3_data %>%
+  group_by(species_code, species) %>%
+  summarise(
+    cor_spearman = cor(mean_stress_cv, abs_gbm_change, method = "spearman", use = "complete.obs"),
+    cor_p = cor.test(mean_stress_cv, abs_gbm_change, method = "spearman")$p.value,
+    n = n(),
+    .groups = "drop"
+  )
+
+cat("\nCorrelation between exon variability and GBM change:\n")
+print(h3_correlations)
+```
+
+---
+
+## Summary and Conclusions
+
+### Compile All Results
+
+```{r results-summary}
+cat("\n" %+% strrep("=", 60) %+% "\n")
+cat("           HYPOTHESIS TESTING SUMMARY\n")
+cat(strrep("=", 60) %+% "\n\n")
+
+# Hypothesis 1 Summary
+cat("HYPOTHESIS 1: Genes changing in activity at T2/T3 have low GBM\n")
+cat(strrep("-", 50) %+% "\n")
+for(i in 1:nrow(h1_tests)) {
+  sp <- h1_tests$species_code[i]
+  cat(sprintf("  %s: %s (p = %.4f)\n", 
+              species_lookup[sp], 
+              h1_tests$interpretation[i],
+              h1_tests$wilcox_p[i]))
+}
+cat("\n")
+
+# Hypothesis 2 Summary
+cat("HYPOTHESIS 2: High Expr + High GBM genes have higher GBM at stress\n")
+cat(strrep("-", 50) %+% "\n")
+for(i in 1:nrow(h2_focus)) {
+  sp <- h2_focus$species_code[i]
+  cat(sprintf("  %s: %s (change = %.2f%%, p = %.4f)\n", 
+              species_lookup[sp], 
+              h2_focus$interpretation[i],
+              h2_focus$pct_increase[i],
+              h2_focus$t_test_p[i]))
+}
+cat("\n")
+
+# Hypothesis 3 Summary
+cat("HYPOTHESIS 3: High exon variability genes have differential GBM\n")
+cat(strrep("-", 50) %+% "\n")
+for(i in 1:nrow(h3_tests)) {
+  sp <- h3_tests$species_code[i]
+  cat(sprintf("  %s: %s (p = %.4f)\n", 
+              species_lookup[sp], 
+              h3_tests$interpretation[i],
+              h3_tests$wilcox_p[i]))
+}
+cat("\n")
+```
+
+### Export Results Tables
+
+```{r export-results}
+# Combine all hypothesis results
+h1_export <- h1_tests %>%
+  mutate(hypothesis = "H1", 
+         species = species_lookup[species_code]) %>%
+  select(hypothesis, species, changed_mean_gbm, unchanged_mean_gbm, 
+         wilcox_p, h1_supported, interpretation)
+
+h2_export <- h2_focus %>%
+  mutate(hypothesis = "H2",
+         species = species_lookup[species_code]) %>%
+  select(hypothesis, species, n_genes, mean_stress_gbm, mean_baseline_gbm,
+         gbm_increase, pct_increase, t_test_p, h2_supported, interpretation)
+
+h3_export <- h3_tests %>%
+  mutate(hypothesis = "H3",
+         species = species_lookup[species_code]) %>%
+  select(hypothesis, species, high_var_mean_change, low_var_mean_change,
+         wilcox_p, h3_supported, interpretation)
+
+# Export
+write_csv(h1_export, file.path(output_dir, "h1_results.csv"))
+write_csv(h2_export, file.path(output_dir, "h2_results.csv"))
+write_csv(h3_export, file.path(output_dir, "h3_results.csv"))
+
+# Export full merged datasets
+write_csv(expr_gbm_merged, file.path(output_dir, "expression_gbm_merged.csv"))
+write_csv(h2_data, file.path(output_dir, "h2_expression_gbm_categories.csv"))
+write_csv(h3_data, file.path(output_dir, "h3_exon_var_gbm.csv"))
+
+cat("Results exported to:", output_dir, "\n")
+```
+
+### Combined Visualization
+
+```{r combined-figure, fig.height=14, fig.width=16}
+# Create combined summary figure
+combined_plot <- plot_grid(
+  p_h1 + theme(plot.title = element_text(size = 11)),
+  p_h2 + theme(plot.title = element_text(size = 11)),
+  p_h3 + theme(plot.title = element_text(size = 11)),
+  p_h3_cor + theme(plot.title = element_text(size = 11)),
+  ncol = 2,
+  labels = c("A", "B", "C", "D")
+)
+
+combined_plot
+ggsave(file.path(output_dir, "combined_hypothesis_figure.png"), 
+       combined_plot, width = 16, height = 14, dpi = 300)
+```
+
+---
+
+## Species-Specific Deep Dive
+
+### Comparison Across Species
+
+```{r species-comparison, fig.height=10, fig.width=14}
+# Create summary data for species comparison using safer join approach
+# Prepare H1 results
+h1_summary <- h1_tests %>%
+  mutate(
+    hypothesis = "H1",
+    species = species_lookup[species_code],
+    p_value = wilcox_p,
+    supported = h1_supported
+  ) %>%
+  select(species, hypothesis, p_value, supported)
+
+# Prepare H2 results
+h2_summary <- h2_focus %>%
+  mutate(
+    hypothesis = "H2",
+    species = species_lookup[species_code],
+    p_value = t_test_p,
+    supported = h2_supported
+  ) %>%
+  select(species, hypothesis, p_value, supported)
+
+# Prepare H3 results
+h3_summary <- h3_tests %>%
+  mutate(
+    hypothesis = "H3",
+    species = species_lookup[species_code],
+    p_value = wilcox_p,
+    supported = h3_supported
+  ) %>%
+  select(species, hypothesis, p_value, supported)
+
+# Combine all results
+species_summary <- bind_rows(h1_summary, h2_summary, h3_summary) %>%
+  mutate(
+    significance = case_when(
+      is.na(p_value) ~ "NA",
+      p_value < 0.001 ~ "***",
+      p_value < 0.01 ~ "**",
+      p_value < 0.05 ~ "*",
+      TRUE ~ "ns"
+    ),
+    result = case_when(
+      is.na(supported) ~ "No Data",
+      supported ~ "Supported",
+      TRUE ~ "Not Supported"
+    )
+  )
+
+cat("Species summary:\n")
+print(species_summary)
+
+# Heatmap-style visualization
+p_summary <- ggplot(species_summary, aes(x = hypothesis, y = species, fill = result)) +
+  geom_tile(color = "white", size = 1) +
+  geom_text(aes(label = significance), size = 6, fontface = "bold") +
+  scale_fill_manual(values = c("Supported" = "#00A087", 
+                               "Not Supported" = "#E64B35",
+                               "No Data" = "gray80"),
+                    name = "Hypothesis") +
+  labs(
+    title = "Summary: Hypothesis Support Across Species",
+    subtitle = "* p<0.05, ** p<0.01, *** p<0.001, ns = not significant",
+    x = "Hypothesis",
+    y = "Species"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.y = element_text(face = "italic"),
+    panel.grid = element_blank()
+  )
+
+p_summary
+ggsave(file.path(output_dir, "hypothesis_summary_heatmap.png"), p_summary, width = 10, height = 6, dpi = 300)
+```
+
+---
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```
+

@@ -1,0 +1,2 @@
+hypothesis,species,high_var_mean_change,low_var_mean_change,wilcox_p,h3_supported,interpretation
+H3,Acropora pulchra,0.20119910613764824,0.6944600035585103,1.760361392563092e-5,FALSE,NOT SUPPORTED: No difference in GBM changes

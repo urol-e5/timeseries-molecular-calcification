@@ -6,6 +6,8 @@ Analyze the relationship between local CpG methylation and exon-level expression
 For each exon, identify CpG sites that fall within the exon coordinates and compute
 correlations between methylation levels and exon expression across samples.
 
+PARALLELIZED VERSION - Uses all available CPUs for correlation computation.
+
 Data Sources:
 -------------
 Exon Expression Matrices:
@@ -17,18 +19,17 @@ mCpG Methylation Data:
 - Apul: https://gannet.fish.washington.edu/.../merged-WGBS-CpG-counts_filtered_n20.csv
 - Peve: https://gannet.fish.washington.edu/.../merged-WGBS-CpG-counts_filtered_n20.csv
 - Ptua: https://gannet.fish.washington.edu/.../merged-WGBS-CpG-counts_filtered_n20.csv
-
-CpG ID Format:
-- Apul: CpG_ntLink_0_90500 → chr=ntLink_0, pos=90500
-- Peve: CpG_Porites_evermani_scaffold_1000_100536 → chr=Porites_evermani_scaffold_1000, pos=100536
-- Ptua: CpG_Pocillopora_meandrina_HIv1___Sc0000000_1000005 → chr=..., pos=1000005
 """
 
 import os
 import re
+import sys
 import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
+import multiprocessing as mp
 
 import numpy as np
 import pandas as pd
@@ -63,42 +64,19 @@ OUTPUT_DIR = SCRIPT_DIR.parent / 'output' / '46-exon-mCpG'
 # Minimum samples required for correlation
 MIN_SAMPLES = 5
 
+# Number of CPUs to use (None = all available)
+N_CPUS = None
+
 
 # =============================================================================
 # Helper Functions
 # =============================================================================
 
-def parse_cpg_id(cpg_id: str) -> Tuple[Optional[str], Optional[int]]:
-    """
-    Parse a CpG ID to extract chromosome and position.
-    
-    CpG ID format: CpG_{chromosome}_{position}
-    where position is the last underscore-separated numeric segment.
-    
-    Examples:
-    - CpG_ntLink_0_90500 → ('ntLink_0', 90500)
-    - CpG_Porites_evermani_scaffold_1000_100536 → ('Porites_evermani_scaffold_1000', 100536)
-    - CpG_Pocillopora_meandrina_HIv1___Sc0000000_1000005 → ('Pocillopora_meandrina_HIv1___Sc0000000', 1000005)
-    
-    Parameters
-    ----------
-    cpg_id : str
-        The CpG identifier string
-        
-    Returns
-    -------
-    tuple
-        (chromosome, position) or (None, None) if parsing fails
-    """
-    # Remove "CpG_" prefix
-    stripped = cpg_id.replace('CpG_', '', 1) if cpg_id.startswith('CpG_') else cpg_id
-    
-    # Match pattern: everything before last underscore = chromosome, after = position
-    match = re.match(r'^(.+)_(\d+)$', stripped)
-    
-    if match:
-        return match.group(1), int(match.group(2))
-    return None, None
+def get_n_cpus():
+    """Get number of CPUs to use for parallel processing."""
+    if N_CPUS is not None:
+        return N_CPUS
+    return mp.cpu_count()
 
 
 def parse_cpg_ids_vectorized(cpg_ids: pd.Series) -> pd.DataFrame:
@@ -132,6 +110,7 @@ def parse_cpg_ids_vectorized(cpg_ids: pd.Series) -> pd.DataFrame:
 def find_cpgs_in_exons(exon_coords: pd.DataFrame, cpg_coords: pd.DataFrame) -> pd.DataFrame:
     """
     Find CpG sites that fall within exon coordinates.
+    Uses chunked merge for memory efficiency.
     
     Parameters
     ----------
@@ -145,139 +124,223 @@ def find_cpgs_in_exons(exon_coords: pd.DataFrame, cpg_coords: pd.DataFrame) -> p
     pd.DataFrame
         Mapping of exons to CpGs within them
     """
-    # Merge on chromosome
-    merged = exon_coords.merge(
-        cpg_coords,
-        left_on='chr',
-        right_on='cpg_chr',
-        how='inner'
-    )
+    # Get unique chromosomes present in both datasets
+    common_chrs = set(exon_coords['chr'].unique()) & set(cpg_coords['cpg_chr'].unique())
     
-    # Filter to CpGs within exon boundaries
-    within_exon = merged[
-        (merged['cpg_pos'] >= merged['start']) & 
-        (merged['cpg_pos'] <= merged['end'])
-    ]
+    results = []
     
-    return within_exon[['gene_id', 'e_id', 'chr', 'start', 'end', 'cpg_id', 'cpg_pos']].copy()
+    for chrom in common_chrs:
+        # Filter to this chromosome
+        exon_chr = exon_coords[exon_coords['chr'] == chrom]
+        cpg_chr = cpg_coords[cpg_coords['cpg_chr'] == chrom]
+        
+        if exon_chr.empty or cpg_chr.empty:
+            continue
+        
+        # For each exon, find CpGs within bounds using numpy broadcasting
+        exon_starts = exon_chr['start'].values
+        exon_ends = exon_chr['end'].values
+        cpg_positions = cpg_chr['cpg_pos'].values
+        
+        # Create mask for CpGs within each exon
+        # This uses memory but is much faster than row-by-row iteration
+        for i, (gene_id, e_id, start, end) in enumerate(
+            zip(exon_chr['gene_id'], exon_chr['e_id'], exon_starts, exon_ends)
+        ):
+            mask = (cpg_positions >= start) & (cpg_positions <= end)
+            matching_cpgs = cpg_chr[mask]
+            
+            if len(matching_cpgs) > 0:
+                for _, cpg_row in matching_cpgs.iterrows():
+                    results.append({
+                        'gene_id': gene_id,
+                        'e_id': e_id,
+                        'chr': chrom,
+                        'start': start,
+                        'end': end,
+                        'cpg_id': cpg_row['cpg_id'],
+                        'cpg_pos': cpg_row['cpg_pos']
+                    })
+    
+    if not results:
+        return pd.DataFrame(columns=['gene_id', 'e_id', 'chr', 'start', 'end', 'cpg_id', 'cpg_pos'])
+    
+    return pd.DataFrame(results)
 
 
-def compute_correlation(exon_vals: np.ndarray, cpg_vals: np.ndarray) -> Tuple[float, float]:
+def compute_single_correlation(args: Tuple) -> Optional[Dict]:
     """
-    Compute Spearman correlation between exon expression and CpG methylation.
+    Compute correlation for a single exon-CpG pair.
+    Designed for parallel execution.
     
     Parameters
     ----------
-    exon_vals : np.ndarray
-        Exon expression values
-    cpg_vals : np.ndarray
-        CpG methylation values
+    args : tuple
+        (gene_id, e_id, chr, start, end, cpg_id, cpg_pos, exon_vals, cpg_vals)
         
     Returns
     -------
-    tuple
-        (correlation coefficient, p-value)
+    dict or None
+        Correlation result dictionary or None if computation fails
     """
+    gene_id, e_id, chrom, start, end, cpg_id, cpg_pos, exon_vals, cpg_vals = args
+    
     # Remove NA pairs
     valid_mask = ~(np.isnan(exon_vals) | np.isnan(cpg_vals))
     exon_clean = exon_vals[valid_mask]
     cpg_clean = cpg_vals[valid_mask]
     
-    if len(exon_clean) < MIN_SAMPLES:
-        return np.nan, np.nan
+    n_samples = len(exon_clean)
+    
+    if n_samples < MIN_SAMPLES:
+        return None
     
     # Check for zero variance
     if np.std(exon_clean) == 0 or np.std(cpg_clean) == 0:
-        return np.nan, np.nan
+        return None
     
     try:
         corr, pval = stats.spearmanr(exon_clean, cpg_clean)
-        return corr, pval
+        if np.isnan(corr):
+            return None
+            
+        return {
+            'gene_id': gene_id,
+            'e_id': e_id,
+            'chr': chrom,
+            'exon_start': start,
+            'exon_end': end,
+            'cpg_id': cpg_id,
+            'cpg_pos': cpg_pos,
+            'n_samples': n_samples,
+            'correlation': corr,
+            'p_value': pval
+        }
     except Exception:
-        return np.nan, np.nan
+        return None
 
 
-def compute_exon_cpg_correlations(
+def prepare_correlation_args(
     exon_expr: pd.DataFrame,
     cpg_meth: pd.DataFrame,
     exon_cpg_map: pd.DataFrame,
     sample_cols: List[str]
-) -> pd.DataFrame:
+) -> List[Tuple]:
     """
-    Compute correlations between exon expression and CpG methylation.
+    Prepare arguments for parallel correlation computation.
     
     Parameters
     ----------
     exon_expr : pd.DataFrame
-        Exon expression matrix with sample columns
+        Exon expression matrix
     cpg_meth : pd.DataFrame
-        CpG methylation matrix with sample columns
+        CpG methylation matrix  
     exon_cpg_map : pd.DataFrame
-        Mapping of exons to CpGs within them
+        Mapping of exons to CpGs
     sample_cols : list
-        Sample column names present in both datasets
+        Common sample column names
+        
+    Returns
+    -------
+    list
+        List of argument tuples for compute_single_correlation
+    """
+    # Create indexed lookups
+    exon_expr = exon_expr.copy()
+    exon_expr['exon_key'] = exon_expr['gene_id'].astype(str) + '_' + exon_expr['e_id'].astype(str)
+    exon_expr_indexed = exon_expr.set_index('exon_key')
+    cpg_meth_indexed = cpg_meth.set_index('CpG')
+    
+    # Get unique pairs
+    pairs = exon_cpg_map.drop_duplicates(subset=['gene_id', 'e_id', 'cpg_id'])
+    
+    args_list = []
+    
+    for _, row in pairs.iterrows():
+        exon_key = f"{row['gene_id']}_{row['e_id']}"
+        cpg_id = row['cpg_id']
+        
+        # Check if data exists
+        if exon_key not in exon_expr_indexed.index:
+            continue
+        if cpg_id not in cpg_meth_indexed.index:
+            continue
+        
+        try:
+            exon_vals = exon_expr_indexed.loc[exon_key, sample_cols].values.astype(float)
+            cpg_vals = cpg_meth_indexed.loc[cpg_id, sample_cols].values.astype(float)
+        except (KeyError, ValueError):
+            continue
+        
+        args_list.append((
+            row['gene_id'],
+            row['e_id'],
+            row['chr'],
+            row['start'],
+            row['end'],
+            cpg_id,
+            row['cpg_pos'],
+            exon_vals,
+            cpg_vals
+        ))
+    
+    return args_list
+
+
+def compute_correlations_parallel(args_list: List[Tuple], n_workers: int = None) -> pd.DataFrame:
+    """
+    Compute correlations in parallel using all available CPUs.
+    
+    Parameters
+    ----------
+    args_list : list
+        List of argument tuples for compute_single_correlation
+    n_workers : int, optional
+        Number of worker processes (default: all CPUs)
         
     Returns
     -------
     pd.DataFrame
-        Correlation results for each exon-CpG pair
+        Correlation results
     """
+    if n_workers is None:
+        n_workers = get_n_cpus()
+    
+    n_pairs = len(args_list)
+    print(f"  Computing {n_pairs} correlations using {n_workers} CPUs...")
+    
+    if n_pairs == 0:
+        return pd.DataFrame()
+    
+    # For small datasets, use single process to avoid overhead
+    if n_pairs < 1000:
+        results = [compute_single_correlation(args) for args in args_list]
+        results = [r for r in results if r is not None]
+        return pd.DataFrame(results) if results else pd.DataFrame()
+    
+    # Use process pool for larger datasets
     results = []
+    chunk_size = max(100, n_pairs // (n_workers * 10))
     
-    # Create unique exon key for faster lookup
-    exon_expr = exon_expr.copy()
-    exon_expr['exon_key'] = exon_expr['gene_id'].astype(str) + '_' + exon_expr['e_id'].astype(str)
-    exon_expr_indexed = exon_expr.set_index('exon_key')
-    
-    # Index CpG data by CpG ID
-    cpg_meth_indexed = cpg_meth.set_index('CpG')
-    
-    # Get unique exon-CpG pairs
-    pairs = exon_cpg_map.drop_duplicates(subset=['gene_id', 'e_id', 'cpg_id'])
-    
-    print(f"  Computing correlations for {len(pairs)} exon-CpG pairs...")
-    
-    for idx, row in pairs.iterrows():
-        exon_key = f"{row['gene_id']}_{row['e_id']}"
-        cpg_id = row['cpg_id']
+    with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        # Submit all tasks
+        futures = {executor.submit(compute_single_correlation, args): i 
+                   for i, args in enumerate(args_list)}
         
-        # Get exon expression values
-        if exon_key not in exon_expr_indexed.index:
-            continue
-        exon_row = exon_expr_indexed.loc[exon_key]
-        
-        # Get CpG methylation values
-        if cpg_id not in cpg_meth_indexed.index:
-            continue
-        cpg_row = cpg_meth_indexed.loc[cpg_id]
-        
-        # Extract values for common samples
-        try:
-            exon_vals = exon_row[sample_cols].values.astype(float)
-            cpg_vals = cpg_row[sample_cols].values.astype(float)
-        except KeyError:
-            continue
-        
-        # Compute correlation
-        corr, pval = compute_correlation(exon_vals, cpg_vals)
-        
-        if not np.isnan(corr):
-            # Count valid samples
-            valid_mask = ~(np.isnan(exon_vals) | np.isnan(cpg_vals))
-            n_samples = np.sum(valid_mask)
+        # Collect results with progress
+        completed = 0
+        for future in as_completed(futures):
+            result = future.result()
+            if result is not None:
+                results.append(result)
+            completed += 1
             
-            results.append({
-                'gene_id': row['gene_id'],
-                'e_id': row['e_id'],
-                'chr': row['chr'],
-                'exon_start': row['start'],
-                'exon_end': row['end'],
-                'cpg_id': cpg_id,
-                'cpg_pos': row['cpg_pos'],
-                'n_samples': n_samples,
-                'correlation': corr,
-                'p_value': pval
-            })
+            # Progress update every 10%
+            if completed % max(1, n_pairs // 10) == 0:
+                pct = 100 * completed / n_pairs
+                print(f"    Progress: {completed}/{n_pairs} ({pct:.0f}%)")
+    
+    print(f"  Completed: {len(results)} valid correlations")
     
     if not results:
         return pd.DataFrame()
@@ -285,7 +348,7 @@ def compute_exon_cpg_correlations(
     return pd.DataFrame(results)
 
 
-def adjust_pvalues(pvalues: pd.Series, method: str = 'fdr_bh') -> pd.Series:
+def adjust_pvalues(pvalues: pd.Series) -> pd.Series:
     """
     Adjust p-values for multiple testing using Benjamini-Hochberg method.
     
@@ -293,40 +356,35 @@ def adjust_pvalues(pvalues: pd.Series, method: str = 'fdr_bh') -> pd.Series:
     ----------
     pvalues : pd.Series
         Raw p-values
-    method : str
-        Correction method (default: 'fdr_bh')
         
     Returns
     -------
     pd.Series
         Adjusted p-values
     """
-    from scipy.stats import false_discovery_control
-    
     valid_mask = ~pvalues.isna()
     adjusted = pd.Series(np.nan, index=pvalues.index)
     
-    if valid_mask.sum() > 0:
-        # Use scipy's FDR control
-        try:
-            adj_vals = false_discovery_control(pvalues[valid_mask].values, method='bh')
-            adjusted.loc[valid_mask] = adj_vals
-        except Exception:
-            # Fallback: simple BH correction
-            pvals = pvalues[valid_mask].values
-            n = len(pvals)
-            sorted_idx = np.argsort(pvals)
-            sorted_pvals = pvals[sorted_idx]
-            
-            # BH adjustment
-            adj = sorted_pvals * n / (np.arange(n) + 1)
-            adj = np.minimum.accumulate(adj[::-1])[::-1]
-            adj = np.minimum(adj, 1.0)
-            
-            # Put back in original order
-            result = np.empty(n)
-            result[sorted_idx] = adj
-            adjusted.loc[valid_mask] = result
+    if valid_mask.sum() == 0:
+        return adjusted
+    
+    pvals = pvalues[valid_mask].values
+    n = len(pvals)
+    sorted_idx = np.argsort(pvals)
+    sorted_pvals = pvals[sorted_idx]
+    
+    # BH adjustment
+    ranks = np.arange(1, n + 1)
+    adj = sorted_pvals * n / ranks
+    
+    # Ensure monotonicity (cumulative minimum from end)
+    adj = np.minimum.accumulate(adj[::-1])[::-1]
+    adj = np.minimum(adj, 1.0)
+    
+    # Put back in original order
+    result = np.empty(n)
+    result[sorted_idx] = adj
+    adjusted.loc[valid_mask] = result
     
     return adjusted
 
@@ -334,18 +392,6 @@ def adjust_pvalues(pvalues: pd.Series, method: str = 'fdr_bh') -> pd.Series:
 def summarize_gene_correlations(corr_df: pd.DataFrame, species: str) -> pd.DataFrame:
     """
     Aggregate exon-level correlations to gene level.
-    
-    Parameters
-    ----------
-    corr_df : pd.DataFrame
-        Exon-CpG correlation results
-    species : str
-        Species name
-        
-    Returns
-    -------
-    pd.DataFrame
-        Gene-level summary
     """
     if corr_df.empty:
         return pd.DataFrame()
@@ -369,23 +415,8 @@ def summarize_gene_correlations(corr_df: pd.DataFrame, species: str) -> pd.DataF
     return summary
 
 
-def plot_correlation_distribution(
-    corr_df: pd.DataFrame,
-    species: str,
-    output_dir: Path
-) -> None:
-    """
-    Create histogram and volcano plot of correlations.
-    
-    Parameters
-    ----------
-    corr_df : pd.DataFrame
-        Correlation results
-    species : str
-        Species name
-    output_dir : Path
-        Output directory for plots
-    """
+def plot_correlation_distribution(corr_df: pd.DataFrame, species: str, output_dir: Path) -> None:
+    """Create histogram and volcano plot of correlations."""
     if corr_df.empty:
         print(f"  No correlations to plot for {species}")
         return
@@ -395,7 +426,7 @@ def plot_correlation_distribution(
     
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     
-    # Histogram of correlations
+    # Histogram
     ax1 = axes[0]
     ax1.hist(corr_df['correlation'], bins=50, color=color, edgecolor='white', alpha=0.8)
     ax1.axvline(x=0, linestyle='--', color='red', linewidth=1.5)
@@ -408,18 +439,19 @@ def plot_correlation_distribution(
     sig_mask = corr_df['p_adj'] < 0.1
     ax2.scatter(
         corr_df.loc[~sig_mask, 'correlation'],
-        -np.log10(corr_df.loc[~sig_mask, 'p_value']),
+        -np.log10(corr_df.loc[~sig_mask, 'p_value'].clip(lower=1e-300)),
         alpha=0.5, s=10, c='gray', label='Not significant'
     )
-    ax2.scatter(
-        corr_df.loc[sig_mask, 'correlation'],
-        -np.log10(corr_df.loc[sig_mask, 'p_value']),
-        alpha=0.7, s=15, c='red', label='FDR < 0.1'
-    )
+    if sig_mask.sum() > 0:
+        ax2.scatter(
+            corr_df.loc[sig_mask, 'correlation'],
+            -np.log10(corr_df.loc[sig_mask, 'p_value'].clip(lower=1e-300)),
+            alpha=0.7, s=15, c='red', label='FDR < 0.1'
+        )
     ax2.axhline(y=-np.log10(0.05), linestyle='--', color='blue', linewidth=1)
     ax2.set_xlabel('Spearman Correlation')
     ax2.set_ylabel('-log10(p-value)')
-    ax2.set_title(f'{species}: Volcano Plot of Exon-CpG Correlations')
+    ax2.set_title(f'{species}: Volcano Plot')
     ax2.legend()
     
     plt.tight_layout()
@@ -427,22 +459,9 @@ def plot_correlation_distribution(
     plt.close()
 
 
-def plot_cross_species_comparison(
-    all_correlations: pd.DataFrame,
-    output_dir: Path
-) -> None:
-    """
-    Create cross-species comparison plot.
-    
-    Parameters
-    ----------
-    all_correlations : pd.DataFrame
-        Combined correlations from all species
-    output_dir : Path
-        Output directory for plots
-    """
+def plot_cross_species_comparison(all_correlations: pd.DataFrame, output_dir: Path) -> None:
+    """Create cross-species comparison plot."""
     if all_correlations.empty:
-        print("No correlations to plot for cross-species comparison")
         return
     
     colors = {'Apul': 'steelblue', 'Peve': 'coral', 'Ptua': 'seagreen'}
@@ -472,30 +491,9 @@ def plot_cross_species_comparison(
     plt.close()
 
 
-def process_species(
-    species: str,
-    exon_url: str,
-    cpg_url: str,
-    output_dir: Path
-) -> Tuple[pd.DataFrame, pd.DataFrame, Dict]:
+def process_species(species: str, exon_url: str, cpg_url: str, output_dir: Path) -> Tuple[pd.DataFrame, pd.DataFrame, Dict]:
     """
-    Process a single species: load data, find CpGs in exons, compute correlations.
-    
-    Parameters
-    ----------
-    species : str
-        Species name (e.g., 'apul', 'peve', 'ptua')
-    exon_url : str
-        URL to exon expression matrix
-    cpg_url : str
-        URL to CpG methylation matrix
-    output_dir : Path
-        Output directory
-        
-    Returns
-    -------
-    tuple
-        (correlation_df, gene_summary_df, stats_dict)
+    Process a single species.
     """
     species_upper = species.capitalize()
     print(f"\n{'='*60}")
@@ -525,8 +523,8 @@ def process_species(
     cpg_coords = parse_cpg_ids_vectorized(cpg_df['CpG'])
     
     # Show chromosome distribution
-    chr_counts = cpg_coords['cpg_chr'].value_counts().head(10)
-    print(f"  Top chromosomes with CpGs: {dict(chr_counts)}")
+    chr_counts = cpg_coords['cpg_chr'].value_counts().head(5)
+    print(f"  Top 5 chromosomes: {dict(chr_counts)}")
     
     # Extract exon coordinates
     exon_coords = exon_df[['gene_id', 'e_id', 'chr', 'start', 'end']].copy()
@@ -535,17 +533,15 @@ def process_species(
     print(f"  Finding CpGs within exons...")
     exon_cpg_map = find_cpgs_in_exons(exon_coords, cpg_coords)
     
-    print(f"  Found {len(exon_cpg_map)} exon-CpG pairs")
-    print(f"  Unique exons with CpGs: {exon_cpg_map[['gene_id', 'e_id']].drop_duplicates().shape[0]}")
-    print(f"  Unique CpGs in exons: {exon_cpg_map['cpg_id'].nunique()}")
+    n_pairs = len(exon_cpg_map)
+    print(f"  Found {n_pairs} exon-CpG pairs")
     
     if exon_cpg_map.empty:
-        print(f"  WARNING: No CpGs found within exons for {species_upper}")
+        print(f"  WARNING: No CpGs found within exons")
         return pd.DataFrame(), pd.DataFrame(), {}
     
-    # CpGs per exon summary
-    cpgs_per_exon = exon_cpg_map.groupby(['gene_id', 'e_id']).size()
-    print(f"  CpGs per exon - mean: {cpgs_per_exon.mean():.2f}, median: {cpgs_per_exon.median():.1f}, max: {cpgs_per_exon.max()}")
+    print(f"  Unique exons with CpGs: {exon_cpg_map[['gene_id', 'e_id']].drop_duplicates().shape[0]}")
+    print(f"  Unique CpGs in exons: {exon_cpg_map['cpg_id'].nunique()}")
     
     # Identify common samples
     exon_sample_cols = [c for c in exon_df.columns if c not in ['gene_id', 'e_id', 'chr', 'strand', 'start', 'end']]
@@ -557,18 +553,17 @@ def process_species(
     print(f"  Common samples: {len(common_samples)}")
     
     if len(common_samples) < MIN_SAMPLES:
-        print(f"  WARNING: Not enough common samples for {species_upper}")
+        print(f"  WARNING: Not enough common samples")
         return pd.DataFrame(), pd.DataFrame(), {}
     
-    # Compute correlations
-    correlations = compute_exon_cpg_correlations(
-        exon_expr=exon_df,
-        cpg_meth=cpg_df,
-        exon_cpg_map=exon_cpg_map,
-        sample_cols=common_samples
-    )
+    # Prepare arguments for parallel computation
+    print(f"  Preparing data for parallel processing...")
+    args_list = prepare_correlation_args(exon_df, cpg_df, exon_cpg_map, common_samples)
     
-    print(f"  Computed {len(correlations)} correlations")
+    # Compute correlations in parallel
+    correlations = compute_correlations_parallel(args_list, n_workers=get_n_cpus())
+    
+    print(f"  Total valid correlations: {len(correlations)}")
     
     if correlations.empty:
         return pd.DataFrame(), pd.DataFrame(), {}
@@ -581,26 +576,21 @@ def process_species(
         'species': species_upper,
         'total_exons': len(exon_df),
         'total_cpgs': len(cpg_df),
-        'exon_cpg_pairs': len(exon_cpg_map),
+        'exon_cpg_pairs': n_pairs,
         'correlations_tested': len(correlations),
-        'sig_p05': (correlations['p_value'] < 0.05).sum(),
-        'sig_fdr10': (correlations['p_adj'] < 0.1).sum(),
-        'mean_correlation': correlations['correlation'].mean(),
-        'positive_correlations': (correlations['correlation'] > 0).sum(),
-        'negative_correlations': (correlations['correlation'] < 0).sum(),
+        'sig_p05': int((correlations['p_value'] < 0.05).sum()),
+        'sig_fdr10': int((correlations['p_adj'] < 0.1).sum()),
+        'mean_correlation': float(correlations['correlation'].mean()),
+        'positive_correlations': int((correlations['correlation'] > 0).sum()),
+        'negative_correlations': int((correlations['correlation'] < 0).sum()),
     }
     
-    print(f"\n  === {species_upper} Correlation Summary ===")
-    print(f"  Total exon-CpG pairs tested: {stats['correlations_tested']}")
+    print(f"\n  === {species_upper} Summary ===")
+    print(f"  Correlations tested: {stats['correlations_tested']}")
     print(f"  Significant (p < 0.05): {stats['sig_p05']}")
     print(f"  Significant (FDR < 0.1): {stats['sig_fdr10']}")
-    print(f"  Positive correlations: {stats['positive_correlations']}")
-    print(f"  Negative correlations: {stats['negative_correlations']}")
+    print(f"  Positive: {stats['positive_correlations']}, Negative: {stats['negative_correlations']}")
     print(f"  Mean correlation: {stats['mean_correlation']:.4f}")
-    
-    # Correlation summary
-    print(f"\n  Correlation distribution:")
-    print(f"    {correlations['correlation'].describe()}")
     
     # Save results
     correlations.to_csv(output_dir / f'{species.lower()}_exon_cpg_correlations.csv', index=False)
@@ -612,18 +602,18 @@ def process_species(
     # Top correlations
     print(f"\n  Top 10 Positive Correlations:")
     top_pos = correlations[correlations['correlation'] > 0].nsmallest(10, 'p_adj')
-    print(top_pos[['gene_id', 'e_id', 'cpg_id', 'correlation', 'p_value', 'p_adj']].to_string(index=False))
+    if not top_pos.empty:
+        print(top_pos[['gene_id', 'e_id', 'cpg_id', 'correlation', 'p_adj']].to_string(index=False))
     
     print(f"\n  Top 10 Negative Correlations:")
     top_neg = correlations[correlations['correlation'] < 0].nsmallest(10, 'p_adj')
-    print(top_neg[['gene_id', 'e_id', 'cpg_id', 'correlation', 'p_value', 'p_adj']].to_string(index=False))
+    if not top_neg.empty:
+        print(top_neg[['gene_id', 'e_id', 'cpg_id', 'correlation', 'p_adj']].to_string(index=False))
     
     # Gene-level summary
     gene_summary = summarize_gene_correlations(correlations, species_upper)
     if not gene_summary.empty:
-        gene_summary.to_csv(output_dir / f'{species.lower()}_gene_level_correlation_summary.csv', index=False)
-        print(f"\n  Top 10 genes by significance:")
-        print(gene_summary.head(10).to_string(index=False))
+        gene_summary.to_csv(output_dir / f'{species.lower()}_gene_level_summary.csv', index=False)
     
     correlations['species'] = species_upper
     
@@ -631,14 +621,15 @@ def process_species(
 
 
 def main():
-    """Main function to run the exon-mCpG correlation analysis."""
+    """Main function to run the analysis."""
     print("="*70)
     print("Exon-Level Expression and CpG Methylation Correlation Analysis")
     print("="*70)
+    print(f"Using {get_n_cpus()} CPUs for parallel processing")
     
     # Create output directory
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"\nOutput directory: {OUTPUT_DIR}")
+    print(f"Output directory: {OUTPUT_DIR}")
     
     # Process each species
     all_correlations = []
@@ -668,8 +659,6 @@ def main():
     if all_correlations:
         combined_corr = pd.concat(all_correlations, ignore_index=True)
         combined_corr.to_csv(OUTPUT_DIR / 'all_species_exon_cpg_correlations.csv', index=False)
-        
-        # Cross-species plot
         plot_cross_species_comparison(combined_corr, OUTPUT_DIR)
     
     if all_stats:

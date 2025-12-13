@@ -1,0 +1,4 @@
+Species,Biomin Genes,Genes with Exon+mCpG,High Var (>1.5),Medium Var,Low Var (<0.67),CV Ratio Median,CV Ratio Mean
+Acropora pulchra,519,505,10,315,180,0.746,0.813
+Porites evermanni,565,513,16,476,21,1.0,1.013
+Pocillopora tuahiniensis,483,457,10,442,5,0.999,1.056

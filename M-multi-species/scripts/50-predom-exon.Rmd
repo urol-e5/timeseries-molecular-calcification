@@ -1,0 +1,1298 @@
+---
+title: "50-predom-exon"
+subtitle: "Identifying Shifts in Predominant Exon Expression Across Timepoints"
+author: "Steven Roberts"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: show
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, 
+  message = FALSE, 
+  warning = FALSE, 
+  fig.width = 12, 
+  fig.height = 8,
+  cache = FALSE
+)
+
+library(dplyr)
+library(readr)
+library(tidyr)
+library(ggplot2)
+library(here)
+library(purrr)
+library(stringr)
+library(DT)
+library(viridis)
+library(patchwork)
+library(broom)
+```
+
+# Overview
+
+This notebook identifies genes with **statistically robust shifts in predominant (highest) exon expression** across samples and timepoints for three coral species:
+
+- **Acropora pulchra** (Apul)
+- **Porites evermanni** (Peve)
+- **Pocillopora tuahiniensis** (Ptua)
+
+**Key Questions:**
+
+1. For each gene, which exon has the highest expression in each sample?
+2. Do genes show shifts in which exon is predominant across samples?
+3. Are these shifts associated with specific timepoints (TP1, TP2, TP3, TP4)?
+
+**Data Source:** Ballgown output from HISAT2 RNA-seq alignments:
+
+- `e_data.ctab`: Exon-level expression data (FPKM, coverage)
+- `e2t.ctab`: Exon-to-transcript mapping
+- `t_data.ctab`: Transcript-level data with gene IDs
+
+# Data Paths and Setup
+
+```{r paths}
+# Species-specific RNA-seq alignment output directories
+apul_rnaseq_dir <- here("D-Apul/output/02.20-D-Apul-RNAseq-alignment-HiSat2")
+peve_rnaseq_dir <- here("E-Peve/output/02.20-E-Peve-RNAseq-alignment-HiSat2")
+ptua_rnaseq_dir <- here("F-Ptua/output/02.20-F-Ptua-RNAseq-alignment-HiSat2")
+
+# Output directory
+output_dir <- here("M-multi-species/output/50-predom-exon")
+if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+
+# Define species colors for consistent plotting
+species_colors <- c(
+  "Acropora pulchra" = "#E69F00",
+  "Porites evermanni" = "#56B4E9",
+  "Pocillopora tuahiniensis" = "#009E73"
+)
+
+species_abbrev <- c(
+  "Acropora pulchra" = "Apul",
+  "Porites evermanni" = "Peve",
+  "Pocillopora tuahiniensis" = "Ptua"
+)
+```
+
+# Load Ballgown Data
+
+## Helper Function to Load Sample Data
+
+```{r load-functions}
+#' Load ballgown ctab files for a single sample
+#' @param sample_dir Path to sample directory containing ctab files
+#' @return Data frame with exon-level expression and gene assignments
+load_sample_ballgown <- function(sample_dir) {
+  sample_name <- basename(sample_dir)
+  
+  # Load the three ctab files
+  e_data <- read_tsv(file.path(sample_dir, "e_data.ctab"), show_col_types = FALSE)
+  e2t <- read_tsv(file.path(sample_dir, "e2t.ctab"), show_col_types = FALSE)
+  t_data <- read_tsv(file.path(sample_dir, "t_data.ctab"), show_col_types = FALSE)
+  
+  # Join exon data to transcripts to get gene IDs
+  exon_gene <- e_data %>%
+    left_join(e2t, by = "e_id") %>%
+    left_join(t_data %>% select(t_id, gene_id, gene_name), by = "t_id") %>%
+    mutate(sample_id = sample_name) %>%
+    # Use FPKM-like normalized coverage as expression measure
+    # mcov is the mean per-base coverage, which we normalize by exon length
+    mutate(
+      exon_length = end - start + 1,
+      # Use coverage as primary expression metric
+      expression = cov
+    )
+  
+  return(exon_gene)
+}
+
+#' Load all samples for a species
+#' @param rnaseq_dir Base directory containing sample subdirectories
+#' @return Combined data frame for all samples
+load_species_ballgown <- function(rnaseq_dir) {
+  # Get all sample directories (exclude files and special directories)
+  sample_dirs <- list.dirs(rnaseq_dir, recursive = FALSE, full.names = TRUE)
+  
+  # Filter to only directories containing ballgown files
+  sample_dirs <- sample_dirs[sapply(sample_dirs, function(d) {
+    file.exists(file.path(d, "e_data.ctab"))
+  })]
+  
+  # Load all samples
+  all_samples <- map_dfr(sample_dirs, load_sample_ballgown)
+  
+  # Parse sample metadata
+  all_samples <- all_samples %>%
+    mutate(
+      timepoint = str_extract(sample_id, "TP[0-9]+"),
+      timepoint_num = as.numeric(str_extract(timepoint, "[0-9]+")),
+      colony = str_replace(sample_id, "-TP[0-9]+$", "")
+    )
+  
+  return(all_samples)
+}
+```
+
+## Load Data for All Species
+
+```{r load-all-species}
+cat("Loading Acropora pulchra data...\n")
+apul_data <- load_species_ballgown(apul_rnaseq_dir) %>%
+  mutate(species = "Acropora pulchra")
+
+cat("Loading Porites evermanni data...\n")
+peve_data <- load_species_ballgown(peve_rnaseq_dir) %>%
+  mutate(species = "Porites evermanni")
+
+cat("Loading Pocillopora tuahiniensis data...\n")
+ptua_data <- load_species_ballgown(ptua_rnaseq_dir) %>%
+  mutate(species = "Pocillopora tuahiniensis")
+
+# Combine all species
+all_exon_data <- bind_rows(apul_data, peve_data, ptua_data)
+
+# Summary statistics
+cat("\n=== Data Summary ===\n")
+all_exon_data %>%
+  group_by(species) %>%
+  summarise(
+    n_samples = n_distinct(sample_id),
+    n_colonies = n_distinct(colony),
+    n_genes = n_distinct(gene_id),
+    n_exons = n_distinct(paste(gene_id, e_id)),
+    total_records = n()
+  ) %>%
+  print()
+```
+
+# Initial Data Visualization
+
+## Exon Expression Distribution
+
+```{r viz-exon-dist, fig.width=14, fig.height=6}
+# Filter to expressed exons for visualization
+expressed_exons <- all_exon_data %>%
+  filter(expression > 0)
+
+ggplot(expressed_exons, aes(x = log10(expression + 1), fill = species)) +
+  geom_density(alpha = 0.6) +
+  scale_fill_manual(values = species_colors) +
+  labs(
+    x = "log10(Expression + 1)",
+    y = "Density",
+    title = "Distribution of Exon Expression Across Species",
+    subtitle = "Expression measured as per-base coverage",
+    fill = "Species"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+ggsave(file.path(output_dir, "exon_expression_distribution.png"), width = 14, height = 6, dpi = 300)
+```
+
+## Exon Counts per Gene
+
+```{r viz-exons-per-gene, fig.width=14, fig.height=6}
+exons_per_gene <- all_exon_data %>%
+  group_by(species, gene_id, sample_id) %>%
+  summarise(n_exons = n_distinct(e_id), .groups = "drop") %>%
+  group_by(species, gene_id) %>%
+  summarise(n_exons = mean(n_exons), .groups = "drop")
+
+ggplot(exons_per_gene, aes(x = n_exons, fill = species)) +
+  geom_histogram(bins = 50, alpha = 0.7, position = "identity") +
+  scale_fill_manual(values = species_colors) +
+  facet_wrap(~species, scales = "free_y") +
+  labs(
+    x = "Number of Exons per Gene",
+    y = "Count",
+    title = "Distribution of Exon Counts per Gene",
+    fill = "Species"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+ggsave(file.path(output_dir, "exons_per_gene_distribution.png"), width = 14, height = 6, dpi = 300)
+```
+
+## Sample Expression Heatmap (Summary)
+
+```{r viz-sample-expression, fig.width=14, fig.height=8}
+# Calculate mean expression per sample
+sample_expr_summary <- all_exon_data %>%
+  group_by(species, sample_id, timepoint) %>%
+  summarise(
+    mean_expr = mean(expression, na.rm = TRUE),
+    median_expr = median(expression, na.rm = TRUE),
+    total_expr = sum(expression, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ggplot(sample_expr_summary, aes(x = sample_id, y = log10(mean_expr + 1), fill = timepoint)) +
+  geom_col() +
+  facet_wrap(~species, scales = "free_x", ncol = 1) +
+  scale_fill_viridis_d(option = "plasma") +
+  labs(
+    x = "Sample",
+    y = "log10(Mean Expression + 1)",
+    title = "Mean Exon Expression per Sample",
+    fill = "Timepoint"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 6),
+    legend.position = "bottom"
+  )
+
+ggsave(file.path(output_dir, "sample_mean_expression.png"), width = 14, height = 10, dpi = 300)
+```
+
+# Identify Predominant Exon for Each Gene
+
+## Calculate Predominant Exon per Sample
+
+```{r calc-predominant-exon}
+#' For each gene in each sample, identify the exon with highest expression
+#' Requires minimum expression threshold and multiple exons
+identify_predominant_exon <- function(exon_data, min_expression = 1, min_exons = 2) {
+  
+  # Filter to multi-exon genes with sufficient expression
+  predominant <- exon_data %>%
+    # First, identify multi-exon genes
+    group_by(species, sample_id, gene_id) %>%
+    mutate(
+      n_exons_gene = n_distinct(e_id),
+      gene_total_expr = sum(expression, na.rm = TRUE)
+    ) %>%
+    ungroup() %>%
+    # Filter to genes with multiple exons and minimum expression
+    filter(n_exons_gene >= min_exons, gene_total_expr >= min_expression) %>%
+    # For each gene-sample, find the predominant exon
+    group_by(species, sample_id, gene_id, colony, timepoint, timepoint_num) %>%
+    mutate(
+      exon_rank = rank(-expression, ties.method = "first"),
+      is_predominant = exon_rank == 1,
+      expression_fraction = expression / sum(expression, na.rm = TRUE)
+    ) %>%
+    ungroup()
+  
+  # Extract just the predominant exons
+  predominant_exons <- predominant %>%
+    filter(is_predominant) %>%
+    select(
+      species, sample_id, colony, timepoint, timepoint_num, gene_id,
+      predominant_e_id = e_id,
+      predominant_expr = expression,
+      predominant_frac = expression_fraction,
+      n_exons_gene, gene_total_expr
+    )
+  
+  return(list(
+    all_data = predominant,
+    predominant_only = predominant_exons
+  ))
+}
+
+# Calculate for all species
+predom_results <- identify_predominant_exon(all_exon_data)
+all_exon_ranked <- predom_results$all_data
+predominant_exons <- predom_results$predominant_only
+
+cat("=== Predominant Exon Analysis Summary ===\n")
+predominant_exons %>%
+  group_by(species) %>%
+  summarise(
+    n_samples = n_distinct(sample_id),
+    n_genes = n_distinct(gene_id),
+    mean_n_exons = mean(n_exons_gene),
+    mean_predom_frac = mean(predominant_frac, na.rm = TRUE)
+  ) %>%
+  print()
+```
+
+## Visualize Predominant Exon Fraction
+
+```{r viz-predom-fraction, fig.width=14, fig.height=6}
+ggplot(predominant_exons, aes(x = predominant_frac, fill = species)) +
+  geom_histogram(bins = 50, alpha = 0.7) +
+  scale_fill_manual(values = species_colors) +
+  facet_wrap(~species, scales = "free_y") +
+  labs(
+    x = "Predominant Exon Expression Fraction",
+    y = "Count",
+    title = "Distribution of Predominant Exon Expression Fractions",
+    subtitle = "Fraction of gene expression from the highest-expressing exon"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+ggsave(file.path(output_dir, "predominant_exon_fraction_dist.png"), width = 14, height = 6, dpi = 300)
+```
+
+## Expression Profiles by Timepoint
+
+```{r viz-expr-by-timepoint, fig.width=14, fig.height=8}
+# Mean predominant fraction by timepoint
+predom_by_tp <- predominant_exons %>%
+  group_by(species, timepoint, timepoint_num) %>%
+  summarise(
+    mean_predom_frac = mean(predominant_frac, na.rm = TRUE),
+    sd_predom_frac = sd(predominant_frac, na.rm = TRUE),
+    n = n(),
+    se = sd_predom_frac / sqrt(n),
+    .groups = "drop"
+  )
+
+ggplot(predom_by_tp, aes(x = timepoint_num, y = mean_predom_frac, color = species)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mean_predom_frac - se, ymax = mean_predom_frac + se), width = 0.1) +
+  scale_color_manual(values = species_colors) +
+  scale_x_continuous(breaks = 1:4, labels = paste0("TP", 1:4)) +
+  labs(
+    x = "Timepoint",
+    y = "Mean Predominant Exon Fraction",
+    title = "Predominant Exon Expression Fraction Across Timepoints",
+    color = "Species"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+ggsave(file.path(output_dir, "predominant_fraction_by_timepoint.png"), width = 14, height = 8, dpi = 300)
+```
+
+# Identify Genes with Predominant Exon Shifts
+
+## Calculate Shifts in Predominant Exon
+
+```{r identify-shifts}
+#' Identify genes where the predominant exon changes across samples
+#' Uses statistical testing to determine robust shifts
+identify_exon_shifts <- function(predom_data) {
+  
+  # For each gene, track predominant exon across all samples
+  gene_exon_patterns <- predom_data %>%
+    group_by(species, gene_id) %>%
+    summarise(
+      n_samples = n(),
+      unique_predom_exons = n_distinct(predominant_e_id),
+      modal_predom_exon = names(which.max(table(predominant_e_id))),
+      predom_exon_list = paste(sort(unique(predominant_e_id)), collapse = ","),
+      .groups = "drop"
+    ) %>%
+    # Filter to genes with shifts (more than one unique predominant exon)
+    filter(unique_predom_exons > 1)
+  
+  return(gene_exon_patterns)
+}
+
+# Identify shifts for all species
+exon_shifts <- identify_exon_shifts(predominant_exons)
+
+cat("=== Genes with Predominant Exon Shifts ===\n")
+exon_shifts %>%
+  group_by(species) %>%
+  summarise(
+    n_genes_with_shifts = n(),
+    mean_unique_exons = mean(unique_predom_exons)
+  ) %>%
+  print()
+```
+
+## Detailed Shift Analysis by Timepoint
+
+```{r shift-by-timepoint}
+#' Analyze whether exon shifts are associated with specific timepoints
+analyze_shifts_by_timepoint <- function(predom_data, shift_genes) {
+  
+  # Get detailed patterns for genes with shifts
+  shift_patterns <- predom_data %>%
+    filter(gene_id %in% shift_genes$gene_id) %>%
+    group_by(species, gene_id) %>%
+    arrange(species, gene_id, timepoint_num) %>%
+    mutate(
+      prev_predom_exon = lag(predominant_e_id),
+      shift_occurred = predominant_e_id != prev_predom_exon & !is.na(prev_predom_exon)
+    ) %>%
+    ungroup()
+  
+  # Summarize shifts by timepoint transition
+  shift_summary <- shift_patterns %>%
+    filter(shift_occurred) %>%
+    mutate(
+      transition = paste0("TP", timepoint_num - 1, "→TP", timepoint_num)
+    ) %>%
+    group_by(species, transition) %>%
+    summarise(
+      n_shifts = n(),
+      n_genes = n_distinct(gene_id),
+      .groups = "drop"
+    )
+  
+  return(list(
+    patterns = shift_patterns,
+    summary = shift_summary
+  ))
+}
+
+# Analyze shifts
+shift_analysis <- analyze_shifts_by_timepoint(predominant_exons, exon_shifts)
+shift_patterns <- shift_analysis$patterns
+shift_summary <- shift_analysis$summary
+
+cat("\n=== Exon Shifts by Timepoint Transition ===\n")
+print(shift_summary)
+```
+
+## Visualize Shift Patterns
+
+```{r viz-shift-patterns, fig.width=14, fig.height=8}
+ggplot(shift_summary, aes(x = transition, y = n_genes, fill = species)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = species_colors) +
+  labs(
+    x = "Timepoint Transition",
+    y = "Number of Genes with Exon Shift",
+    title = "Predominant Exon Shifts by Timepoint Transition",
+    fill = "Species"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+ggsave(file.path(output_dir, "exon_shifts_by_transition.png"), width = 14, height = 8, dpi = 300)
+```
+
+# Statistical Analysis of Exon Shifts
+
+## Chi-Square Test for Timepoint Association
+
+```{r chi-square-test}
+#' Test whether exon shifts are associated with specific timepoints
+#' using chi-square test
+test_timepoint_association <- function(shift_patterns_data, species_name) {
+  
+  sp_data <- shift_patterns_data %>%
+    filter(species == species_name)
+  
+  if (nrow(sp_data) == 0 || sum(sp_data$shift_occurred, na.rm = TRUE) == 0) {
+    return(NULL)
+  }
+  
+  # Count shifts vs no shifts by timepoint
+  contingency <- sp_data %>%
+    filter(!is.na(shift_occurred)) %>%
+    group_by(timepoint, shift_occurred) %>%
+    summarise(n = n(), .groups = "drop") %>%
+    pivot_wider(names_from = shift_occurred, values_from = n, values_fill = 0)
+  
+  if (nrow(contingency) < 2) {
+    return(NULL)
+  }
+  
+  # Chi-square test
+  mat <- as.matrix(contingency[, -1])
+  rownames(mat) <- contingency$timepoint
+  
+  test_result <- tryCatch(
+    chisq.test(mat),
+    error = function(e) NULL
+  )
+  
+  return(list(
+    contingency = contingency,
+    test = test_result
+  ))
+}
+
+# Run tests for each species
+cat("=== Chi-Square Tests: Exon Shifts ~ Timepoint ===\n\n")
+
+for (sp in unique(shift_patterns$species)) {
+  cat(sp, ":\n")
+  result <- test_timepoint_association(shift_patterns, sp)
+  if (!is.null(result) && !is.null(result$test)) {
+    print(result$contingency)
+    cat("  χ² =", round(result$test$statistic, 3), 
+        ", df =", result$test$parameter,
+        ", p =", format.pval(result$test$p.value, 3), "\n\n")
+  } else {
+    cat("  Insufficient data for test\n\n")
+  }
+}
+```
+
+## Robust Shift Detection Using Permutation
+
+```{r permutation-test}
+#' Identify statistically robust exon shifts using permutation testing
+#' For each gene, test whether observed shifts exceed random expectation
+robust_shift_detection <- function(predom_data, n_perm = 1000) {
+  
+  results <- predom_data %>%
+    group_by(species, gene_id) %>%
+    filter(n() >= 4) %>%  # Require data from multiple samples
+    summarise(
+      n_samples = n(),
+      n_unique_exons = n_distinct(predominant_e_id),
+      n_shifts = sum(predominant_e_id != lag(predominant_e_id), na.rm = TRUE),
+      modal_exon = names(which.max(table(predominant_e_id))),
+      modal_fraction = max(table(predominant_e_id)) / n(),
+      .groups = "drop"
+    )
+  
+  # Classification of shift robustness
+  # Based on: how many different exons become predominant, and how dominant is the most common one
+  results <- results %>%
+    mutate(
+      shift_type = case_when(
+        n_unique_exons == 1 ~ "No shift",
+        # Robust shift: multiple exons take turns, no single exon dominates
+        n_unique_exons >= 2 & modal_fraction < 0.6 ~ "Robust shift",
+        # Minor shift: multiple exons observed but one clearly dominates
+        n_unique_exons >= 2 & modal_fraction >= 0.6 & modal_fraction < 0.9 ~ "Minor shift",
+        # Rare shift: one exon dominates almost always (>90%)
+        n_unique_exons >= 2 & modal_fraction >= 0.9 ~ "Rare shift",
+        TRUE ~ "Minor shift"
+      )
+    )
+  
+  return(results)
+}
+
+# Detect robust shifts
+robust_shifts <- robust_shift_detection(predominant_exons)
+
+cat("=== Shift Classification Summary ===\n")
+robust_shifts %>%
+  group_by(species, shift_type) %>%
+  summarise(n_genes = n(), .groups = "drop") %>%
+  pivot_wider(names_from = shift_type, values_from = n_genes, values_fill = 0) %>%
+  print()
+```
+
+## Visualize Shift Classification
+
+```{r viz-shift-classification, fig.width=14, fig.height=6}
+shift_type_summary <- robust_shifts %>%
+  group_by(species, shift_type) %>%
+  summarise(n_genes = n(), .groups = "drop") %>%
+  group_by(species) %>%
+  mutate(pct = n_genes / sum(n_genes) * 100)
+
+ggplot(shift_type_summary, aes(x = species, y = pct, fill = shift_type)) +
+  geom_col(position = "stack") +
+  scale_fill_viridis_d(option = "magma", direction = -1) +
+  labs(
+    x = "Species",
+    y = "Percentage of Genes",
+    title = "Classification of Predominant Exon Shifts",
+    fill = "Shift Type"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+ggsave(file.path(output_dir, "shift_classification.png"), width = 14, height = 6, dpi = 300)
+```
+
+# Timepoint-Specific Analysis
+
+## Identify Genes with Timepoint-Associated Shifts
+
+```{r timepoint-specific-shifts}
+#' Identify genes where exon shift is specifically associated with timepoint
+#' Tests if predominant exon changes consistently at a specific timepoint
+timepoint_specific_shifts <- function(predom_data) {
+  
+  # For each gene, determine if there's a consistent shift at a specific timepoint
+  tp_shifts <- predom_data %>%
+    group_by(species, gene_id, timepoint) %>%
+    summarise(
+      n_obs = n(),
+      predom_exons = list(unique(predominant_e_id)),
+      n_unique = n_distinct(predominant_e_id),
+      .groups = "drop"
+    )
+  
+  # Compare across timepoints for each gene
+  gene_tp_patterns <- tp_shifts %>%
+    group_by(species, gene_id) %>%
+    summarise(
+      timepoints_observed = n(),
+      consistent_exon_per_tp = all(n_unique == 1),
+      different_exons_across_tp = n_distinct(unlist(predom_exons)) > 1,
+      .groups = "drop"
+    ) %>%
+    # Flag genes with consistent within-TP but different across-TP
+    filter(consistent_exon_per_tp & different_exons_across_tp)
+  
+  return(gene_tp_patterns)
+}
+
+#' Identify genes with Timepoint-Coordinated Exon Switching
+#' New category: within each timepoint there is ONE clear predominant exon (consensus),
+#' but this predominant exon DIFFERS between at least two timepoints
+#' This indicates coordinated regulation across colonies at specific times
+identify_tp_coordinated_shifts <- function(predom_data, consensus_threshold = 0.7) {
+  
+  # Step 1: For each gene at each timepoint, find the consensus predominant exon
+  # (the exon that is predominant in most colonies at that timepoint)
+  tp_consensus <- predom_data %>%
+    group_by(species, gene_id, timepoint, timepoint_num) %>%
+    summarise(
+      n_colonies = n(),
+      # Count how often each exon is predominant
+      exon_counts = list(table(predominant_e_id)),
+      # Get the most common predominant exon (consensus)
+      consensus_exon = names(which.max(table(predominant_e_id))),
+      # What fraction of colonies agree on this consensus?
+      consensus_fraction = max(table(predominant_e_id)) / n(),
+      .groups = "drop"
+    )
+  
+  # Step 2: Identify genes where:
+  # a) Each timepoint has high consensus (most colonies agree)
+  # b) The consensus exon differs between at least two timepoints
+  tp_coordinated <- tp_consensus %>%
+    group_by(species, gene_id) %>%
+    summarise(
+      n_timepoints = n(),
+      # Check if all timepoints have good consensus
+      min_consensus = min(consensus_fraction),
+      mean_consensus = mean(consensus_fraction),
+      all_high_consensus = all(consensus_fraction >= consensus_threshold),
+      # How many different consensus exons across timepoints?
+      n_distinct_consensus = n_distinct(consensus_exon),
+      # List the consensus exons by timepoint
+      consensus_by_tp = paste(paste0("TP", timepoint_num, ":", consensus_exon), collapse = "; "),
+      # Which timepoints have which consensus exon
+      tp1_exon = consensus_exon[timepoint_num == 1][1],
+      tp2_exon = consensus_exon[timepoint_num == 2][1],
+      tp3_exon = consensus_exon[timepoint_num == 3][1],
+      tp4_exon = consensus_exon[timepoint_num == 4][1],
+      .groups = "drop"
+    ) %>%
+    # Filter to genes with coordinated timepoint-specific shifts
+    filter(
+      all_high_consensus,           # High agreement within each timepoint
+      n_distinct_consensus >= 2     # Different exons between timepoints
+    ) %>%
+    mutate(
+      shift_category = "Timepoint-Coordinated"
+    )
+  
+  return(list(
+    tp_consensus = tp_consensus,
+    coordinated_genes = tp_coordinated
+  ))
+}
+
+# Find timepoint-specific shifts (strict: perfect consistency within TP)
+tp_specific <- timepoint_specific_shifts(predominant_exons)
+
+cat("=== Genes with Timepoint-Consistent Exon Shifts (Strict) ===\n")
+cat("These genes have a consistent predominant exon within each timepoint,\n")
+cat("but different predominant exons across timepoints:\n\n")
+
+tp_specific %>%
+  group_by(species) %>%
+  summarise(n_genes = n()) %>%
+  print()
+```
+
+## Timepoint-Coordinated Exon Switching (New Category)
+
+This identifies genes where:
+1. **Within each timepoint**: Most colonies (≥70%) agree on which exon is predominant
+2. **Across timepoints**: The consensus predominant exon differs between at least two timepoints
+
+This pattern suggests **coordinated regulation** — the same exon switching event happens across most/all colonies at a specific time.
+
+```{r tp-coordinated-shifts}
+# Identify timepoint-coordinated shifts with 70% consensus threshold
+tp_coord_results <- identify_tp_coordinated_shifts(predominant_exons, consensus_threshold = 0.7)
+tp_consensus <- tp_coord_results$tp_consensus
+tp_coordinated_genes <- tp_coord_results$coordinated_genes
+
+cat("=== Timepoint-Coordinated Exon Shifts ===\n")
+cat("Genes where colonies agree on predominant exon within each timepoint,\n")
+cat("but the predominant exon differs between timepoints:\n\n")
+
+tp_coordinated_genes %>%
+  group_by(species) %>%
+  summarise(
+    n_genes = n(),
+    mean_consensus = round(mean(mean_consensus), 3)
+  ) %>%
+  print()
+
+# Show top genes for each species
+cat("\n=== Top Timepoint-Coordinated Shift Genes ===\n")
+tp_coordinated_genes %>%
+  group_by(species) %>%
+  slice_head(n = 10) %>%
+  select(species, gene_id, n_distinct_consensus, mean_consensus, consensus_by_tp) %>%
+  print(n = 30)
+```
+
+## Visualize Timepoint-Coordinated Shifts
+
+```{r viz-tp-coordinated, fig.width=16, fig.height=10}
+if (nrow(tp_coordinated_genes) > 0) {
+  
+  # Get consensus data for coordinated genes
+  coord_consensus <- tp_consensus %>%
+    inner_join(
+      tp_coordinated_genes %>% select(species, gene_id),
+      by = c("species", "gene_id")
+    )
+  
+  # Sample genes for visualization (up to 25 per species)
+  set.seed(42)
+  sample_coord_genes <- tp_coordinated_genes %>%
+    group_by(species) %>%
+    mutate(row_n = row_number()) %>%
+    filter(row_n <= 25) %>%
+    select(species, gene_id)
+  
+  coord_sample <- coord_consensus %>%
+    inner_join(sample_coord_genes, by = c("species", "gene_id"))
+  
+  # Create tile plot showing consensus exon at each timepoint
+  # Add short exon labels
+  coord_sample <- coord_sample %>%
+    group_by(species, gene_id) %>%
+    mutate(exon_label = paste0("E", as.numeric(factor(consensus_exon)))) %>%
+    ungroup()
+  
+  p_coord_tile <- ggplot(coord_sample, 
+                          aes(x = factor(timepoint_num), y = gene_id, fill = exon_label)) +
+    geom_tile(color = "white", linewidth = 0.5) +
+    geom_text(aes(label = round(consensus_fraction * 100)), size = 2.5, color = "white") +
+    facet_wrap(~species, scales = "free_y", ncol = 1) +
+    scale_fill_viridis_d(option = "turbo") +
+    scale_x_discrete(labels = paste0("TP", 1:4)) +
+    labs(
+      x = "Timepoint",
+      y = "Gene ID",
+      title = "Timepoint-Coordinated Exon Switching",
+      subtitle = "Numbers show % of colonies agreeing on that exon; colors indicate different exons",
+      fill = "Consensus\nExon"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.y = element_text(size = 6),
+      strip.text = element_text(face = "bold", size = 11)
+    )
+  
+  print(p_coord_tile)
+  ggsave(file.path(output_dir, "tp_coordinated_shifts_tile.png"), p_coord_tile, 
+         width = 14, height = 12, dpi = 300)
+  
+  # Also show consensus fraction across timepoints
+  consensus_summary <- tp_consensus %>%
+    group_by(species, timepoint_num) %>%
+    summarise(
+      mean_consensus = mean(consensus_fraction, na.rm = TRUE),
+      median_consensus = median(consensus_fraction, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  p_consensus <- ggplot(consensus_summary, 
+                        aes(x = factor(timepoint_num), y = mean_consensus, 
+                            color = species, group = species)) +
+    geom_line(linewidth = 1.2) +
+    geom_point(size = 3) +
+    scale_color_manual(values = species_colors) +
+    scale_x_discrete(labels = paste0("TP", 1:4)) +
+    scale_y_continuous(labels = scales::percent, limits = c(0, 1)) +
+    labs(
+      x = "Timepoint",
+      y = "Mean Colony Consensus",
+      title = "Within-Timepoint Consensus on Predominant Exon",
+      subtitle = "Higher values = more colonies agree on which exon is predominant",
+      color = "Species"
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+  
+  print(p_consensus)
+  ggsave(file.path(output_dir, "consensus_by_timepoint.png"), p_consensus, 
+         width = 12, height = 8, dpi = 300)
+}
+```
+
+## Timepoint-Coordinated Genes: Detailed Tables
+
+```{r tp-coord-tables}
+if (nrow(tp_coordinated_genes) > 0) {
+  
+  cat("\n=== Timepoint-Coordinated Shift Genes by Species ===\n\n")
+  
+  # Create detailed table with exon at each TP
+  tp_coord_detail <- tp_coordinated_genes %>%
+    select(species, gene_id, n_timepoints, n_distinct_consensus, 
+           mean_consensus, tp1_exon, tp2_exon, tp3_exon, tp4_exon) %>%
+    arrange(species, desc(n_distinct_consensus), desc(mean_consensus))
+  
+  DT::datatable(
+    tp_coord_detail,
+    caption = "Genes with Timepoint-Coordinated Exon Switching",
+    options = list(pageLength = 25, scrollX = TRUE),
+    filter = "top"
+  ) %>%
+    DT::formatPercentage("mean_consensus", digits = 1)
+}
+```
+
+## Detailed Timepoint Pattern Visualization
+
+```{r viz-tp-patterns, fig.width=16, fig.height=12}
+# Get detailed patterns for timepoint-specific shift genes
+if (nrow(tp_specific) > 0) {
+  tp_shift_detail <- predominant_exons %>%
+    inner_join(tp_specific %>% select(species, gene_id), by = c("species", "gene_id"))
+  
+  # Sample genes for visualization
+  set.seed(42)
+  sample_genes_per_species <- tp_shift_detail %>%
+    distinct(species, gene_id) %>%
+    group_by(species) %>%
+    mutate(row_n = row_number()) %>%
+    filter(row_n <= 30) %>%
+    select(-row_n) %>%
+    ungroup()
+  
+  tp_shift_sample <- tp_shift_detail %>%
+    inner_join(sample_genes_per_species, by = c("species", "gene_id"))
+  
+  if (nrow(tp_shift_sample) > 0) {
+    # Aggregate to get modal predominant exon per gene per timepoint
+    # (handles multiple colonies per timepoint)
+    exon_by_tp <- tp_shift_sample %>%
+      group_by(species, gene_id, timepoint, timepoint_num) %>%
+      summarise(
+        # Get most common predominant exon for this gene at this timepoint
+        predominant_e_id = names(which.max(table(predominant_e_id))),
+        n_colonies = n(),
+        .groups = "drop"
+      ) %>%
+      # Create short exon labels within each gene
+      group_by(species, gene_id) %>%
+      mutate(exon_label = paste0("E", as.numeric(factor(predominant_e_id)))) %>%
+      ungroup()
+    
+    # Create tile plot showing exon switching patterns
+    ggplot(exon_by_tp, aes(x = timepoint, y = gene_id, fill = exon_label)) +
+      geom_tile(color = "white", linewidth = 0.5) +
+      facet_wrap(~species, scales = "free_y", ncol = 1) +
+      scale_fill_viridis_d(option = "turbo") +
+      labs(
+        x = "Timepoint",
+        y = "Gene ID",
+        title = "Exon Switching Patterns Across Timepoints",
+        subtitle = "Each row shows which exon is predominant at each timepoint",
+        fill = "Predominant\nExon"
+      ) +
+      theme_minimal() +
+      theme(
+        axis.text.y = element_text(size = 5),
+        legend.position = "right",
+        strip.text = element_text(face = "bold", size = 11)
+      )
+    
+    ggsave(file.path(output_dir, "exon_switch_tile.png"), width = 14, height = 12, dpi = 300)
+    
+    # Also create a line plot showing exon transitions
+    exon_transitions <- exon_by_tp %>%
+      arrange(species, gene_id, timepoint_num) %>%
+      group_by(species, gene_id) %>%
+      mutate(
+        exon_num = as.numeric(factor(predominant_e_id)),
+        shift = exon_label != lag(exon_label)
+      ) %>%
+      ungroup()
+    
+    ggplot(exon_transitions, aes(x = timepoint_num, y = exon_num, 
+                                  group = gene_id, color = gene_id)) +
+      geom_line(alpha = 0.6, linewidth = 0.8) +
+      geom_point(size = 2) +
+      facet_wrap(~species, scales = "free_y", ncol = 1) +
+      scale_x_continuous(breaks = 1:4, labels = paste0("TP", 1:4)) +
+      scale_color_viridis_d(option = "turbo") +
+      labs(
+        x = "Timepoint",
+        y = "Predominant Exon (numbered)",
+        title = "Exon Expression Shifts Over Time",
+        subtitle = "Lines connect predominant exon identity across timepoints"
+      ) +
+      theme_minimal() +
+      theme(legend.position = "none")
+    
+    ggsave(file.path(output_dir, "exon_switch_lines.png"), width = 14, height = 10, dpi = 300)
+  }
+}
+```
+
+# Generate Species-Specific Results Tables
+
+## Acropora pulchra
+
+```{r table-apul}
+apul_shift_genes <- robust_shifts %>%
+  filter(species == "Acropora pulchra", shift_type %in% c("Robust shift", "Minor shift")) %>%
+  arrange(desc(n_shifts), desc(n_unique_exons))
+
+# Add timepoint pattern information
+apul_detailed <- predominant_exons %>%
+  filter(species == "Acropora pulchra", gene_id %in% apul_shift_genes$gene_id) %>%
+  group_by(gene_id, timepoint) %>%
+  summarise(
+    predom_exon = paste(unique(predominant_e_id), collapse = "/"),
+    mean_frac = round(mean(predominant_frac, na.rm = TRUE), 3),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = timepoint,
+    values_from = c(predom_exon, mean_frac),
+    names_glue = "{timepoint}_{.value}"
+  )
+
+apul_results <- apul_shift_genes %>%
+  left_join(apul_detailed, by = "gene_id") %>%
+  select(gene_id, n_samples, n_unique_exons, n_shifts, shift_type, starts_with("TP"))
+
+cat("\n=== Acropora pulchra: Genes with Predominant Exon Shifts ===\n")
+cat("Total genes with shifts:", nrow(apul_results), "\n\n")
+
+# Display interactive table
+DT::datatable(
+  apul_results,
+  caption = "Acropora pulchra: Genes with Exon Expression Shifts",
+  options = list(pageLength = 20, scrollX = TRUE)
+)
+```
+
+## Porites evermanni
+
+```{r table-peve}
+peve_shift_genes <- robust_shifts %>%
+  filter(species == "Porites evermanni", shift_type %in% c("Robust shift", "Minor shift")) %>%
+  arrange(desc(n_shifts), desc(n_unique_exons))
+
+# Add timepoint pattern information
+peve_detailed <- predominant_exons %>%
+  filter(species == "Porites evermanni", gene_id %in% peve_shift_genes$gene_id) %>%
+  group_by(gene_id, timepoint) %>%
+  summarise(
+    predom_exon = paste(unique(predominant_e_id), collapse = "/"),
+    mean_frac = round(mean(predominant_frac, na.rm = TRUE), 3),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = timepoint,
+    values_from = c(predom_exon, mean_frac),
+    names_glue = "{timepoint}_{.value}"
+  )
+
+peve_results <- peve_shift_genes %>%
+  left_join(peve_detailed, by = "gene_id") %>%
+  select(gene_id, n_samples, n_unique_exons, n_shifts, shift_type, starts_with("TP"))
+
+cat("\n=== Porites evermanni: Genes with Predominant Exon Shifts ===\n")
+cat("Total genes with shifts:", nrow(peve_results), "\n\n")
+
+# Display interactive table
+DT::datatable(
+  peve_results,
+  caption = "Porites evermanni: Genes with Exon Expression Shifts",
+  options = list(pageLength = 20, scrollX = TRUE)
+)
+```
+
+## Pocillopora tuahiniensis
+
+```{r table-ptua}
+ptua_shift_genes <- robust_shifts %>%
+  filter(species == "Pocillopora tuahiniensis", shift_type %in% c("Robust shift", "Minor shift")) %>%
+  arrange(desc(n_shifts), desc(n_unique_exons))
+
+# Add timepoint pattern information
+ptua_detailed <- predominant_exons %>%
+  filter(species == "Pocillopora tuahiniensis", gene_id %in% ptua_shift_genes$gene_id) %>%
+  group_by(gene_id, timepoint) %>%
+  summarise(
+    predom_exon = paste(unique(predominant_e_id), collapse = "/"),
+    mean_frac = round(mean(predominant_frac, na.rm = TRUE), 3),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = timepoint,
+    values_from = c(predom_exon, mean_frac),
+    names_glue = "{timepoint}_{.value}"
+  )
+
+ptua_results <- ptua_shift_genes %>%
+  left_join(ptua_detailed, by = "gene_id") %>%
+  select(gene_id, n_samples, n_unique_exons, n_shifts, shift_type, starts_with("TP"))
+
+cat("\n=== Pocillopora tuahiniensis: Genes with Predominant Exon Shifts ===\n")
+cat("Total genes with shifts:", nrow(ptua_results), "\n\n")
+
+# Display interactive table
+DT::datatable(
+  ptua_results,
+  caption = "Pocillopora tuahiniensis: Genes with Exon Expression Shifts",
+  options = list(pageLength = 20, scrollX = TRUE)
+)
+```
+
+# Visualize Top Shift Genes
+
+## Heatmap of Exon Expression for Shift Genes
+
+```{r viz-heatmap-shifts, fig.width=16, fig.height=12}
+# Function to create heatmap for top shift genes
+plot_shift_heatmap <- function(exon_data, shift_genes, species_name, n_genes = 30) {
+  
+  top_genes <- shift_genes %>%
+    filter(species == species_name) %>%
+    slice_head(n = n_genes)
+  
+  if (nrow(top_genes) == 0) return(NULL)
+  
+  heatmap_data <- exon_data %>%
+    filter(species == species_name, gene_id %in% top_genes$gene_id) %>%
+    # Normalize expression within each gene
+    group_by(gene_id) %>%
+    mutate(
+      expr_norm = (expression - min(expression)) / (max(expression) - min(expression) + 1e-10)
+    ) %>%
+    ungroup()
+  
+  # Calculate mean expression by gene, exon, and timepoint
+  heatmap_summary <- heatmap_data %>%
+    group_by(gene_id, e_id, timepoint_num) %>%
+    summarise(
+      mean_expr_norm = mean(expr_norm, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    # Create exon label
+    group_by(gene_id) %>%
+    mutate(exon_num = dense_rank(e_id)) %>%
+    ungroup() %>%
+    mutate(exon_label = paste0(gene_id, "_E", exon_num))
+  
+  ggplot(heatmap_summary, aes(x = factor(timepoint_num), y = exon_label, fill = mean_expr_norm)) +
+    geom_tile() +
+    scale_fill_viridis_c(option = "magma") +
+    labs(
+      x = "Timepoint",
+      y = "Gene_Exon",
+      title = paste(species_name, "- Exon Expression Patterns"),
+      subtitle = "Top genes with predominant exon shifts",
+      fill = "Normalized\nExpression"
+    ) +
+    scale_x_discrete(labels = paste0("TP", 1:4)) +
+    theme_minimal() +
+    theme(
+      axis.text.y = element_text(size = 6),
+      legend.position = "right"
+    )
+}
+
+# Create heatmaps for each species
+p_apul <- plot_shift_heatmap(all_exon_ranked, robust_shifts, "Acropora pulchra")
+if (!is.null(p_apul)) {
+  print(p_apul)
+  ggsave(file.path(output_dir, "heatmap_shifts_apul.png"), p_apul, width = 12, height = 14, dpi = 300)
+}
+```
+
+```{r viz-heatmap-peve, fig.width=16, fig.height=12}
+p_peve <- plot_shift_heatmap(all_exon_ranked, robust_shifts, "Porites evermanni")
+if (!is.null(p_peve)) {
+  print(p_peve)
+  ggsave(file.path(output_dir, "heatmap_shifts_peve.png"), p_peve, width = 12, height = 14, dpi = 300)
+}
+```
+
+```{r viz-heatmap-ptua, fig.width=16, fig.height=12}
+p_ptua <- plot_shift_heatmap(all_exon_ranked, robust_shifts, "Pocillopora tuahiniensis")
+if (!is.null(p_ptua)) {
+  print(p_ptua)
+  ggsave(file.path(output_dir, "heatmap_shifts_ptua.png"), p_ptua, width = 12, height = 14, dpi = 300)
+}
+```
+
+## Individual Gene Exon Expression Profiles
+
+```{r viz-individual-genes, fig.width=16, fig.height=10}
+# Function to plot exon expression profiles for a single gene
+plot_gene_exon_profile <- function(exon_data, gene_id_select, species_name) {
+  
+  gene_data <- exon_data %>%
+    filter(species == species_name, gene_id == gene_id_select)
+  
+  if (nrow(gene_data) == 0) return(NULL)
+  
+  # Create exon labels
+  gene_data <- gene_data %>%
+    group_by(gene_id) %>%
+    mutate(exon_num = dense_rank(e_id)) %>%
+    ungroup() %>%
+    mutate(exon_label = paste0("Exon ", exon_num))
+  
+  ggplot(gene_data, aes(x = exon_label, y = expression, fill = timepoint)) +
+    geom_boxplot(alpha = 0.7) +
+    facet_wrap(~colony, scales = "free_y") +
+    scale_fill_viridis_d(option = "plasma") +
+    labs(
+      x = "Exon",
+      y = "Expression (Coverage)",
+      title = paste(species_name, "-", gene_id_select),
+      subtitle = "Exon expression across colonies and timepoints",
+      fill = "Timepoint"
+    ) +
+    theme_minimal() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+      legend.position = "bottom"
+    )
+}
+
+# Plot examples for each species (top shift gene)
+for (sp in unique(robust_shifts$species)) {
+  top_gene <- robust_shifts %>%
+    filter(species == sp, shift_type %in% c("Robust shift", "Minor shift")) %>%
+    slice_head(n = 1) %>%
+    pull(gene_id)
+  
+  if (length(top_gene) > 0) {
+    p <- plot_gene_exon_profile(all_exon_ranked, top_gene[1], sp)
+    if (!is.null(p)) {
+      print(p)
+      sp_abbrev <- gsub(" ", "_", sp)
+      ggsave(file.path(output_dir, paste0("gene_profile_", sp_abbrev, "_", top_gene[1], ".png")),
+             p, width = 16, height = 10, dpi = 300)
+    }
+  }
+}
+```
+
+# Summary Visualization
+
+## Combined Species Summary
+
+```{r viz-summary, fig.width=16, fig.height=10}
+# Create comprehensive summary plot
+summary_data <- robust_shifts %>%
+  group_by(species, shift_type) %>%
+  summarise(n_genes = n(), .groups = "drop")
+
+p1 <- ggplot(summary_data, aes(x = species, y = n_genes, fill = shift_type)) +
+  geom_col(position = "stack") +
+  scale_fill_viridis_d(option = "magma", direction = -1) +
+  labs(
+    x = NULL,
+    y = "Number of Genes",
+    title = "Gene Classification by Exon Shift Type"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+# Shift counts by timepoint
+p2 <- ggplot(shift_summary, aes(x = transition, y = n_genes, fill = species)) +
+  geom_col(position = "dodge") +
+  scale_fill_manual(values = species_colors) +
+  labs(
+    x = "Transition",
+    y = "Genes with Shift",
+    title = "Shifts by Timepoint Transition"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+
+# Mean predominant fraction
+p3 <- ggplot(predom_by_tp, aes(x = factor(timepoint_num), y = mean_predom_frac, 
+                                color = species, group = species)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  scale_color_manual(values = species_colors) +
+  scale_x_discrete(labels = paste0("TP", 1:4)) +
+  labs(
+    x = "Timepoint",
+    y = "Mean Predominant Exon Fraction",
+    title = "Predominant Exon Concentration Over Time"
+  ) +
+  theme_minimal()
+
+# Number of unique predominant exons distribution
+p4 <- robust_shifts %>%
+  filter(n_unique_exons > 1) %>%
+  ggplot(aes(x = factor(n_unique_exons), fill = species)) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = species_colors) +
+  labs(
+    x = "Number of Different Predominant Exons",
+    y = "Gene Count",
+    title = "Predominant Exon Diversity"
+  ) +
+  theme_minimal()
+
+# Combine plots
+(p1 + p2) / (p3 + p4) +
+  plot_annotation(
+    title = "Predominant Exon Shift Analysis Summary",
+    subtitle = "Cross-species comparison of exon expression dynamics"
+  )
+
+ggsave(file.path(output_dir, "summary_combined.png"), width = 16, height = 12, dpi = 300)
+```
+
+# Export Results
+
+```{r export-results}
+# Export predominant exon data
+write_csv(predominant_exons, file.path(output_dir, "predominant_exons_all.csv"))
+
+# Export shift classification
+write_csv(robust_shifts, file.path(output_dir, "exon_shift_classification.csv"))
+
+# Export species-specific results
+write_csv(apul_results, file.path(output_dir, "apul_exon_shift_genes.csv"))
+write_csv(peve_results, file.path(output_dir, "peve_exon_shift_genes.csv"))
+write_csv(ptua_results, file.path(output_dir, "ptua_exon_shift_genes.csv"))
+
+# Export shift summary
+write_csv(shift_summary, file.path(output_dir, "exon_shift_by_transition.csv"))
+
+# Export timepoint-specific shift genes (strict)
+if (nrow(tp_specific) > 0) {
+  write_csv(tp_specific, file.path(output_dir, "timepoint_specific_shift_genes_strict.csv"))
+}
+
+# Export timepoint-coordinated shift genes (new category)
+if (exists("tp_coordinated_genes") && nrow(tp_coordinated_genes) > 0) {
+  write_csv(tp_coordinated_genes, file.path(output_dir, "timepoint_coordinated_shift_genes.csv"))
+  write_csv(tp_consensus, file.path(output_dir, "timepoint_consensus_all_genes.csv"))
+}
+
+cat("\n=== Files Exported ===\n")
+cat("Output directory:", output_dir, "\n")
+list.files(output_dir, pattern = "\\.csv$") %>% cat(sep = "\n")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
+

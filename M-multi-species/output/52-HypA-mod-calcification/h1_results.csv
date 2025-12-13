@@ -1,0 +1,4 @@
+hypothesis,species,changed_mean_gbm,unchanged_mean_gbm,wilcox_p,h1_supported,interpretation
+H1,Acropora pulchra,7.1662714908763085,6.684375861473779,0.017692913446837034,FALSE,NOT SUPPORTED: Changed genes have similar/higher GBM
+H1,Porites evermanni,3.9614697406773076,9.005350620577408,1.7324705015916528e-4,TRUE,SUPPORTED: Changed genes have lower GBM
+H1,Pocillopora tuahiniensis,1.9025959013391915,4.630526543203449,2.3605952485191117e-4,TRUE,SUPPORTED: Changed genes have lower GBM
