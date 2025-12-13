@@ -19,6 +19,13 @@ Acropora: low baseline GBM → high transcriptional variance
 Porites: high baseline GBM → transcriptional canalization
 
 
+
+There are three species of corals and 4 timepoints (TP). TP-2 is warmest.
+
+
+
+
+
 Data neccessary to test the hypotheses 
 
 Expression matrices of calicification genes across timepoints and treatments for each species.
@@ -46,3 +53,8 @@ https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/ref
 Pocillopora tuahiniensis
 https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/F-Ptua/output/09-Ptua-Gene-Methylation/Ptua-gene-methylation_75pct.tsv
 
+
+
+Exon level expression to be used as proxy for alternative splicing and expression variablility
+
+M-multi-species/output/40-exon-count-matrix
