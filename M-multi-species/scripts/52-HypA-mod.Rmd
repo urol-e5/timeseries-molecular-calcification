@@ -999,48 +999,64 @@ ggsave(file.path(output_dir, "combined_hypothesis_figure.png"),
 ### Comparison Across Species
 
 ```{r species-comparison, fig.height=10, fig.width=14}
-# Create summary data for species comparison
-species_summary <- tibble(
-  species = rep(species_lookup, each = 3),
-  hypothesis = rep(c("H1", "H2", "H3"), 3),
-  p_value = c(
-    h1_tests$wilcox_p[h1_tests$species_code == "apul"],
-    h2_focus$t_test_p[h2_focus$species_code == "apul"],
-    h3_tests$wilcox_p[h3_tests$species_code == "apul"],
-    h1_tests$wilcox_p[h1_tests$species_code == "peve"],
-    h2_focus$t_test_p[h2_focus$species_code == "peve"],
-    h3_tests$wilcox_p[h3_tests$species_code == "peve"],
-    h1_tests$wilcox_p[h1_tests$species_code == "ptua"],
-    h2_focus$t_test_p[h2_focus$species_code == "ptua"],
-    h3_tests$wilcox_p[h3_tests$species_code == "ptua"]
-  ),
-  supported = c(
-    h1_tests$h1_supported[h1_tests$species_code == "apul"],
-    h2_focus$h2_supported[h2_focus$species_code == "apul"],
-    h3_tests$h3_supported[h3_tests$species_code == "apul"],
-    h1_tests$h1_supported[h1_tests$species_code == "peve"],
-    h2_focus$h2_supported[h2_focus$species_code == "peve"],
-    h3_tests$h3_supported[h3_tests$species_code == "peve"],
-    h1_tests$h1_supported[h1_tests$species_code == "ptua"],
-    h2_focus$h2_supported[h2_focus$species_code == "ptua"],
-    h3_tests$h3_supported[h3_tests$species_code == "ptua"]
-  )
-) %>%
+# Create summary data for species comparison using safer join approach
+# Prepare H1 results
+h1_summary <- h1_tests %>%
+  mutate(
+    hypothesis = "H1",
+    species = species_lookup[species_code],
+    p_value = wilcox_p,
+    supported = h1_supported
+  ) %>%
+  select(species, hypothesis, p_value, supported)
+
+# Prepare H2 results
+h2_summary <- h2_focus %>%
+  mutate(
+    hypothesis = "H2",
+    species = species_lookup[species_code],
+    p_value = t_test_p,
+    supported = h2_supported
+  ) %>%
+  select(species, hypothesis, p_value, supported)
+
+# Prepare H3 results
+h3_summary <- h3_tests %>%
+  mutate(
+    hypothesis = "H3",
+    species = species_lookup[species_code],
+    p_value = wilcox_p,
+    supported = h3_supported
+  ) %>%
+  select(species, hypothesis, p_value, supported)
+
+# Combine all results
+species_summary <- bind_rows(h1_summary, h2_summary, h3_summary) %>%
   mutate(
     significance = case_when(
+      is.na(p_value) ~ "NA",
       p_value < 0.001 ~ "***",
       p_value < 0.01 ~ "**",
       p_value < 0.05 ~ "*",
       TRUE ~ "ns"
     ),
-    result = ifelse(supported, "Supported", "Not Supported")
+    result = case_when(
+      is.na(supported) ~ "No Data",
+      supported ~ "Supported",
+      TRUE ~ "Not Supported"
+    )
   )
+
+cat("Species summary:\n")
+print(species_summary)
 
 # Heatmap-style visualization
 p_summary <- ggplot(species_summary, aes(x = hypothesis, y = species, fill = result)) +
   geom_tile(color = "white", size = 1) +
   geom_text(aes(label = significance), size = 6, fontface = "bold") +
-  scale_fill_manual(values = c("Supported" = "#00A087", "Not Supported" = "#E64B35"),
+  scale_fill_manual(values = c("Supported" = "#00A087", 
+                               "Not Supported" = "#E64B35",
+                               "No Data" = "gray80"),
                     name = "Hypothesis") +
   labs(
     title = "Summary: Hypothesis Support Across Species",
