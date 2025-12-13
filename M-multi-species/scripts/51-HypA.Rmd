@@ -1,0 +1,907 @@
+---
+title: "Hypothesis A: Epigenetic Lability of Ion-Transport Genes in Coral Calcification"
+author: "Steven Roberts"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 7)
+```
+
+## Hypothesis Overview
+
+**Main Hypothesis**: "Plastic vs buffered calcification is encoded by epigenetic lability of ion-transport genes"
+
+Species differ in how epigenetically labile key calcification genes are:
+
+- **Acropora pulchra**: High epigenetic responsiveness (dynamic DNA methylation) at calcification genes, enabling rapid changes but causing instability
+- **Porites evermanni**: Epigenetic buffering (stable methylation, reduced regulatory turnover), enabling sustained calcification under stress
+
+### "Frontloading" vs "Reacting" Hypothesis
+
+- **Porites evermanni** exhibits constitutive high gene body methylation (GBM) in key calcification genes (Ca-ATPase, Carbonic Anhydrase), leading to stable, high-level transcription ("Frontloading")
+- **Acropora pulchra** relies on promoter methylation changes to dynamically regulate these genes
+
+### Expected Observations
+
+1. Under stable conditions: Porites shows lower variance in methylation and expression compared to Acropora
+2. Under heat stress (TP2): Acropora shows massive epigenetic remodeling (DMRs) associated with calcification collapse; Porites methylation profiles remain rigid
+
+### Target Gene Systems
+
+- Ca²⁺ transport: PMCAs, Ca²⁺ channels
+- H⁺ removal / pH regulation: V-type ATPases, SLC transporters
+- Carbon supply: carbonic anhydrases (CA)
+
+---
+
+## Setup and Libraries
+
+```{r libraries}
+library(tidyverse)
+library(corrplot)
+library(pheatmap)
+library(RColorBrewer)
+library(viridis)
+library(ggpubr)
+library(cowplot)
+library(broom)
+
+# Set theme
+theme_set(theme_minimal(base_size = 12))
+
+# Species lookup
+species_lookup <- c(
+  apul = "Acropora pulchra",
+  peve = "Porites evermanni",
+  ptua = "Pocillopora tuahiniensis"
+)
+
+# Color palette for species
+species_colors <- c(
+  "Acropora pulchra" = "#E64B35",
+  "Porites evermanni" = "#4DBBD5",
+  "Pocillopora tuahiniensis" = "#00A087"
+)
+
+# Timepoint colors
+tp_colors <- c("TP1" = "#2166AC", "TP2" = "#D6604D", "TP3" = "#4393C3", "TP4" = "#92C5DE")
+```
+
+```{r output-dir}
+output_dir <- "../output/51-HypA-epigenetic-lability"
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+---
+
+## Load Data
+
+### Expression Matrices for Calcification Genes
+
+```{r load-expression}
+# Load biomineralization gene expression counts
+apul_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/apul_biomin_counts.csv",
+                        show_col_types = FALSE)
+
+peve_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/peve_biomin_counts.csv",
+                        show_col_types = FALSE)
+
+ptua_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/ptua_biomin_counts.csv",
+                        show_col_types = FALSE)
+```
+
+### Gene Body Methylation Data
+
+```{r load-methylation}
+# Acropora pulchra methylation
+apul_meth <- read_tsv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/D-Apul/output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv",
+                      show_col_types = FALSE)
+
+# Porites evermanni methylation
+peve_meth <- read_tsv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/E-Peve/output/15-Peve-Gene-Methylation/Peve-gene-methylation_75pct.tsv",
+                      show_col_types = FALSE)
+
+# Pocillopora tuahiniensis methylation
+ptua_meth <- read_tsv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/F-Ptua/output/09-Ptua-Gene-Methylation/Ptua-gene-methylation_75pct.tsv",
+                      show_col_types = FALSE)
+```
+
+### Annotation File
+
+```{r load-annotation}
+ortholog_annot <- read_csv("../output/12-ortho-annot/ortholog_groups_annotated.csv",
+                           show_col_types = FALSE)
+```
+
+### Exon-Level Expression Data
+
+```{r load-exon-data}
+# Exon summary by ortholog for expression variability analysis
+apul_exon_summary <- read_csv("../output/40-exon-count-matrix/apul-exon_summary_by_ortholog.csv",
+                              show_col_types = FALSE)
+
+peve_exon_summary <- read_csv("../output/40-exon-count-matrix/peve-exon_summary_by_ortholog.csv",
+                              show_col_types = FALSE)
+
+ptua_exon_summary <- read_csv("../output/40-exon-count-matrix/ptua-exon_summary_by_ortholog.csv",
+                              show_col_types = FALSE)
+```
+
+---
+
+## Data Wrangling
+
+### Reshape Expression Data
+
+```{r reshape-expression}
+# Function to reshape expression data to long format
+reshape_expression <- function(df, species_code) {
+  df %>%
+    pivot_longer(
+      cols = -c(group_id, gene_id),
+      names_to = "sample_id",
+      values_to = "count"
+    ) %>%
+    mutate(
+      species_code = species_code,
+      colony_id = str_remove(sample_id, "-TP\\d+$"),
+      timepoint = str_extract(sample_id, "TP\\d+"),
+      timepoint_num = parse_number(timepoint),
+      log_count = log2(count + 1)
+    )
+}
+
+# Reshape all species
+expr_long <- bind_rows(
+  reshape_expression(apul_biomin, "apul"),
+  reshape_expression(peve_biomin, "peve"),
+  reshape_expression(ptua_biomin, "ptua")
+) %>%
+  mutate(species = species_lookup[species_code])
+
+head(expr_long)
+```
+
+### Reshape Methylation Data
+
+```{r reshape-methylation}
+# Function to reshape methylation data
+reshape_methylation <- function(df, species_code) {
+  df %>%
+    pivot_longer(
+      cols = -gene_id,
+      names_to = "sample_id",
+      values_to = "methylation"
+    ) %>%
+    mutate(
+      species_code = species_code,
+      colony_id = str_remove(sample_id, "-TP\\d+$"),
+      timepoint = str_extract(sample_id, "TP\\d+"),
+      timepoint_num = parse_number(timepoint)
+    )
+}
+
+# Reshape all species methylation
+meth_long <- bind_rows(
+  reshape_methylation(apul_meth, "apul") %>% mutate(gene_id = str_remove(gene_id, "^gene-")),
+  reshape_methylation(peve_meth, "peve") %>% mutate(gene_id = str_remove(gene_id, "^gene-")),
+  reshape_methylation(ptua_meth, "ptua") %>% mutate(gene_id = str_remove(gene_id, "^gene-"))
+) %>%
+  mutate(species = species_lookup[species_code])
+
+head(meth_long)
+```
+
+### Identify Biomineralization Genes
+
+```{r biomin-gene-ids}
+# Get unique biomineralization gene IDs for each species
+biomin_genes <- list(
+  apul = unique(apul_biomin$gene_id),
+  peve = unique(peve_biomin$gene_id),
+  ptua = unique(ptua_biomin$gene_id)
+)
+
+biomin_orthogroups <- unique(c(apul_biomin$group_id, peve_biomin$group_id, ptua_biomin$group_id))
+
+cat("Number of biomineralization genes per species:\n")
+sapply(biomin_genes, length)
+cat("\nTotal unique orthogroups:", length(biomin_orthogroups), "\n")
+```
+
+### Filter Methylation Data for Biomin Genes
+
+```{r filter-biomin-methylation}
+# Filter methylation data to biomineralization genes
+biomin_meth <- meth_long %>%
+  filter(
+    (species_code == "apul" & gene_id %in% biomin_genes$apul) |
+    (species_code == "peve" & gene_id %in% biomin_genes$peve) |
+    (species_code == "ptua" & gene_id %in% biomin_genes$ptua)
+  )
+
+cat("Biomin genes with methylation data:\n")
+biomin_meth %>%
+  group_by(species_code) %>%
+  summarise(n_genes = n_distinct(gene_id)) %>%
+  print()
+```
+
+---
+  
+## Analysis 1: Methylation Variability Across Species
+
+### Calculate Methylation Variance per Gene
+
+```{r meth-variance}
+# Calculate methylation variance for each gene within and across timepoints
+meth_variance <- biomin_meth %>%
+  filter(!is.na(methylation)) %>%
+  group_by(species_code, species, gene_id) %>%
+  summarise(
+    mean_meth = mean(methylation, na.rm = TRUE),
+    sd_meth = sd(methylation, na.rm = TRUE),
+    cv_meth = sd_meth / mean_meth,  # Coefficient of variation
+    n_samples = n(),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(cv_meth) & is.finite(cv_meth))
+
+# Summary by species
+meth_variance_summary <- meth_variance %>%
+  group_by(species_code, species) %>%
+  summarise(
+    mean_cv = mean(cv_meth, na.rm = TRUE),
+    median_cv = median(cv_meth, na.rm = TRUE),
+    sd_cv = sd(cv_meth, na.rm = TRUE),
+    n_genes = n(),
+    .groups = "drop"
+  )
+
+print(meth_variance_summary)
+```
+
+### Visualization: Methylation Variability Distribution
+
+```{r meth-variance-plot, fig.height=6, fig.width=10}
+# Boxplot of methylation CV by species
+p1 <- ggplot(meth_variance, aes(x = species, y = cv_meth, fill = species)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.3) +
+  geom_jitter(width = 0.2, alpha = 0.2, size = 0.5) +
+  scale_fill_manual(values = species_colors) +
+  labs(
+    title = "Methylation Variability (CV) Across Biomineralization Genes",
+    subtitle = "Hypothesis: Acropora should show higher CV than Porites",
+    x = "Species",
+    y = "Coefficient of Variation (CV) in Methylation"
+  ) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(face = "italic"))
+
+p1
+ggsave(file.path(output_dir, "meth_cv_boxplot.png"), p1, width = 10, height = 6, dpi = 300)
+```
+
+### Statistical Test: Compare Methylation Variance
+
+```{r meth-variance-test}
+# Kruskal-Wallis test for methylation CV across species
+kw_meth <- kruskal.test(cv_meth ~ species_code, data = meth_variance)
+print(kw_meth)
+
+# Pairwise Wilcoxon tests
+pairwise_meth <- pairwise.wilcox.test(meth_variance$cv_meth, meth_variance$species_code,
+                                       p.adjust.method = "bonferroni")
+print(pairwise_meth)
+
+# Save results
+meth_test_results <- list(
+  kruskal_wallis = kw_meth,
+  pairwise_wilcox = pairwise_meth
+)
+```
+
+---
+
+## Analysis 2: Mean Gene Body Methylation Levels
+
+### Compare Baseline GBM Levels
+
+```{r baseline-gbm}
+# Calculate mean methylation level per gene
+mean_gbm <- biomin_meth %>%
+  filter(!is.na(methylation)) %>%
+  group_by(species_code, species, gene_id) %>%
+  summarise(
+    mean_meth = mean(methylation, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Summary by species
+gbm_summary <- mean_gbm %>%
+  group_by(species_code, species) %>%
+  summarise(
+    grand_mean = mean(mean_meth, na.rm = TRUE),
+    median_meth = median(mean_meth, na.rm = TRUE),
+    sd_meth = sd(mean_meth, na.rm = TRUE),
+    n_genes = n(),
+    .groups = "drop"
+  )
+
+print(gbm_summary)
+```
+
+### Visualization: Mean GBM Distribution
+
+```{r gbm-distribution, fig.height=6, fig.width=10}
+# Density plot of mean methylation by species
+p2 <- ggplot(mean_gbm, aes(x = mean_meth, fill = species, color = species)) +
+  geom_density(alpha = 0.4) +
+  scale_fill_manual(values = species_colors) +
+  scale_color_manual(values = species_colors) +
+  coord_cartesian(ylim = c(0, .025)) +
+  labs(
+    title = "Distribution of Mean Gene Body Methylation in Biomineralization Genes",
+    subtitle = "Hypothesis: Porites shows higher baseline GBM (Frontloading)",
+    x = "Mean Methylation (%)",
+    y = "Density"
+  ) +
+  theme(legend.position = "bottom",
+        legend.text = element_text(face = "italic"))
+
+p2
+ggsave(file.path(output_dir, "gbm_density.png"), p2, width = 10, height = 6, dpi = 300)
+```
+
+### Statistical Test: Compare Mean GBM
+
+```{r gbm-test}
+# Kruskal-Wallis test for mean GBM across species
+kw_gbm <- kruskal.test(mean_meth ~ species_code, data = mean_gbm)
+print(kw_gbm)
+
+# Pairwise Wilcoxon tests
+pairwise_gbm <- pairwise.wilcox.test(mean_gbm$mean_meth, mean_gbm$species_code,
+                                      p.adjust.method = "bonferroni")
+print(pairwise_gbm)
+```
+
+---
+
+## Analysis 3: Expression Variability Across Timepoints
+
+### Calculate Expression Variance
+
+```{r expr-variance}
+# Calculate expression variance per gene
+expr_variance <- expr_long %>%
+  group_by(species_code, species, group_id, gene_id) %>%
+  summarise(
+    mean_count = mean(count, na.rm = TRUE),
+    sd_count = sd(count, na.rm = TRUE),
+    cv_expr = sd_count / mean_count,
+    mean_log = mean(log_count, na.rm = TRUE),
+    sd_log = sd(log_count, na.rm = TRUE),
+    n_samples = n(),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(cv_expr) & is.finite(cv_expr) & mean_count > 10)  # Filter low-expressed genes
+
+# Summary by species
+expr_var_summary <- expr_variance %>%
+  group_by(species_code, species) %>%
+  summarise(
+    mean_cv = mean(cv_expr, na.rm = TRUE),
+    median_cv = median(cv_expr, na.rm = TRUE),
+    sd_cv = sd(cv_expr, na.rm = TRUE),
+    n_genes = n(),
+    .groups = "drop"
+  )
+
+print(expr_var_summary)
+```
+
+### Visualization: Expression Variability
+
+```{r expr-variance-plot, fig.height=6, fig.width=10}
+p3 <- ggplot(expr_variance, aes(x = species, y = cv_expr, fill = species)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.3) +
+  geom_jitter(width = 0.2, alpha = 0.2, size = 0.5) +
+  scale_fill_manual(values = species_colors) +
+  scale_y_continuous(limits = c(0, quantile(expr_variance$cv_expr, 0.95))) +
+  labs(
+    title = "Expression Variability (CV) in Biomineralization Genes",
+    subtitle = "Hypothesis: Acropora shows higher transcriptional variance",
+    x = "Species",
+    y = "Coefficient of Variation (CV) in Expression"
+  ) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(face = "italic"))
+
+p3
+ggsave(file.path(output_dir, "expr_cv_boxplot.png"), p3, width = 10, height = 6, dpi = 300)
+```
+
+### Statistical Test: Compare Expression Variance
+
+```{r expr-variance-test}
+# Kruskal-Wallis test
+kw_expr <- kruskal.test(cv_expr ~ species_code, data = expr_variance)
+print(kw_expr)
+
+# Pairwise tests
+pairwise_expr <- pairwise.wilcox.test(expr_variance$cv_expr, expr_variance$species_code,
+                                       p.adjust.method = "bonferroni")
+print(pairwise_expr)
+```
+
+---
+
+## Analysis 4: Temporal Dynamics - TP2 (Heat Stress) Response
+
+### Calculate Timepoint-Specific Changes
+
+```{r tp-dynamics}
+# Calculate expression by timepoint
+expr_by_tp <- expr_long %>%
+  group_by(species_code, species, group_id, gene_id, timepoint, timepoint_num) %>%
+  summarise(
+    mean_count = mean(count, na.rm = TRUE),
+    mean_log = mean(log_count, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Calculate fold change relative to TP1
+expr_fc <- expr_by_tp %>%
+  group_by(species_code, species, group_id, gene_id) %>%
+  mutate(
+    tp1_mean = mean_log[timepoint == "TP1"],
+    fc_from_tp1 = mean_log - tp1_mean
+  ) %>%
+  ungroup()
+```
+
+### Methylation by Timepoint
+
+```{r meth-by-tp}
+# Calculate methylation by timepoint
+meth_by_tp <- biomin_meth %>%
+  filter(!is.na(methylation)) %>%
+  group_by(species_code, species, gene_id, timepoint, timepoint_num) %>%
+  summarise(
+    mean_meth = mean(methylation, na.rm = TRUE),
+    sd_meth = sd(methylation, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Calculate methylation change from TP1
+meth_delta <- meth_by_tp %>%
+  group_by(species_code, species, gene_id) %>%
+  mutate(
+    tp1_meth = mean_meth[timepoint == "TP1"],
+    delta_meth = mean_meth - tp1_meth
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(delta_meth))
+```
+
+### Visualization: Methylation Changes Across Timepoints
+
+```{r meth-dynamics-plot, fig.height=8, fig.width=12}
+# Boxplot of methylation change from TP1
+p4 <- meth_delta %>%
+  filter(timepoint != "TP1") %>%
+  ggplot(aes(x = timepoint, y = delta_meth, fill = species)) +
+  geom_boxplot(alpha = 0.7, position = position_dodge(width = 0.8)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  scale_fill_manual(values = species_colors) +
+  facet_wrap(~species, ncol = 3) +
+  labs(
+    title = "Methylation Changes Relative to TP1 (Baseline)",
+    subtitle = "TP2 = Heat Stress | Hypothesis: Acropora shows larger remodeling at TP2",
+    x = "Timepoint",
+    y = "Δ Methylation (from TP1)"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "italic"))
+
+p4
+ggsave(file.path(output_dir, "meth_delta_tp.png"), p4, width = 12, height = 8, dpi = 300)
+```
+
+### Quantify Remodeling Magnitude
+
+```{r remodeling-magnitude}
+# Calculate absolute methylation change magnitude at each timepoint
+remodeling_magnitude <- meth_delta %>%
+  filter(timepoint != "TP1") %>%
+  group_by(species_code, species, timepoint) %>%
+  summarise(
+    mean_abs_delta = mean(abs(delta_meth), na.rm = TRUE),
+    median_abs_delta = median(abs(delta_meth), na.rm = TRUE),
+    n_genes = n(),
+    .groups = "drop"
+  )
+
+print(remodeling_magnitude)
+
+# Visualization
+p5 <- ggplot(remodeling_magnitude, aes(x = timepoint, y = mean_abs_delta, 
+                                       fill = species, group = species)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), alpha = 0.8) +
+  scale_fill_manual(values = species_colors) +
+  labs(
+    title = "Magnitude of Methylation Remodeling by Timepoint",
+    subtitle = "Higher values = more epigenetic remodeling",
+    x = "Timepoint",
+    y = "Mean |Δ Methylation|"
+  ) +
+  theme(legend.text = element_text(face = "italic"))
+
+p5
+ggsave(file.path(output_dir, "remodeling_magnitude.png"), p5, width = 10, height = 6, dpi = 300)
+```
+
+---
+
+## Analysis 5: Expression-Methylation Correlation
+
+### Merge Expression and Methylation Data
+
+```{r merge-expr-meth}
+# Create gene mapping between expression and methylation
+# Expression uses gene_id from biomin counts
+# Methylation uses gene_id from methylation files
+
+# Prepare expression summary by gene
+expr_summary <- expr_long %>%
+  group_by(species_code, gene_id) %>%
+  summarise(
+    mean_expr = mean(log_count, na.rm = TRUE),
+    cv_expr = sd(log_count, na.rm = TRUE) / mean(log_count, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(cv_expr) & is.finite(cv_expr))
+
+# Merge with methylation variance
+expr_meth_combined <- meth_variance %>%
+  inner_join(expr_summary, by = c("species_code", "gene_id"))
+
+cat("Genes with both expression and methylation data:\n")
+expr_meth_combined %>%
+  group_by(species_code) %>%
+  summarise(n_genes = n()) %>%
+  print()
+```
+
+### Correlation Analysis
+
+```{r expr-meth-correlation}
+# Calculate correlation between methylation and expression CV
+correlations <- expr_meth_combined %>%
+  group_by(species_code, species) %>%
+  summarise(
+    cor_mean_meth_expr = cor(mean_meth, mean_expr, use = "complete.obs"),
+    cor_cv_meth_cv_expr = cor(cv_meth, cv_expr, use = "complete.obs", method = "spearman"),
+    n = n(),
+    .groups = "drop"
+  )
+
+print(correlations)
+```
+
+### Visualization: Expression vs Methylation
+
+```{r expr-meth-scatter, fig.height=8, fig.width=12}
+# Scatter plot: Mean methylation vs Mean expression
+p6 <- ggplot(expr_meth_combined, aes(x = mean_meth, y = mean_expr, color = species)) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed") +
+  scale_color_manual(values = species_colors) +
+  facet_wrap(~species, scales = "free") +
+  labs(
+    title = "Gene Body Methylation vs Expression Level",
+    subtitle = "Biomineralization genes",
+    x = "Mean Methylation (%)",
+    y = "Mean Expression (log2)"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "italic"))
+
+p6
+ggsave(file.path(output_dir, "expr_meth_scatter.png"), p6, width = 12, height = 8, dpi = 300)
+```
+
+### Variability Correlation
+
+```{r cv-correlation, fig.height=8, fig.width=12}
+# Scatter plot: CV methylation vs CV expression
+p7 <- ggplot(expr_meth_combined, aes(x = cv_meth, y = cv_expr, color = species)) +
+  geom_point(alpha = 0.5, size = 2) +
+  geom_smooth(method = "lm", se = FALSE, linetype = "dashed") +
+  scale_color_manual(values = species_colors) +
+  scale_x_continuous(limits = c(0, quantile(expr_meth_combined$cv_meth, 0.95, na.rm = TRUE))) +
+  scale_y_continuous(limits = c(0, quantile(expr_meth_combined$cv_expr, 0.95, na.rm = TRUE))) +
+  facet_wrap(~species, scales = "free") +
+  labs(
+    title = "Methylation Variability vs Expression Variability",
+    subtitle = "Higher methylation CV may indicate epigenetic lability",
+    x = "CV Methylation",
+    y = "CV Expression"
+  ) +
+  theme(legend.position = "none",
+        strip.text = element_text(face = "italic"))
+
+p7
+ggsave(file.path(output_dir, "cv_meth_expr_scatter.png"), p7, width = 12, height = 8, dpi = 300)
+```
+
+---
+
+## Analysis 6: Target Gene System Analysis
+
+### Annotate Target Gene Systems
+
+```{r target-genes}
+# Define target gene keywords
+target_keywords <- list(
+  calcium_transport = c("PMCA", "plasma membrane calcium", "calcium channel", 
+                        "calcium-transporting", "Ca2+-ATPase", "SERCA", "calcium pump"),
+  ph_regulation = c("V-type ATPase", "vacuolar ATPase", "SLC", "solute carrier", 
+                    "sodium/hydrogen", "Na+/H+", "NHE", "proton pump"),
+  carbon_supply = c("carbonic anhydrase", "CA", "bicarbonate")
+)
+
+# Search for target genes in annotation
+find_target_genes <- function(annotations, keywords) {
+  pattern <- paste(keywords, collapse = "|")
+  annotations %>%
+    filter(str_detect(protein_name, regex(pattern, ignore_case = TRUE)) |
+           str_detect(go_mf, regex(pattern, ignore_case = TRUE)) |
+           str_detect(go_bp, regex(pattern, ignore_case = TRUE)))
+}
+
+# Filter annotation to biomineralization orthogroups
+biomin_annot <- ortholog_annot %>%
+  filter(group_id %in% biomin_orthogroups)
+
+# Find target genes
+target_genes <- list(
+  calcium = find_target_genes(biomin_annot, target_keywords$calcium_transport),
+  ph = find_target_genes(biomin_annot, target_keywords$ph_regulation),
+  carbon = find_target_genes(biomin_annot, target_keywords$carbon_supply)
+)
+
+cat("Target gene counts:\n")
+cat("  Calcium transport:", nrow(target_genes$calcium), "\n")
+cat("  pH regulation:", nrow(target_genes$ph), "\n")
+cat("  Carbon supply:", nrow(target_genes$carbon), "\n")
+```
+
+### Focused Analysis on Target Genes
+
+```{r target-gene-analysis}
+# Combine target gene orthogroups
+target_ogs <- unique(c(
+  target_genes$calcium$group_id,
+  target_genes$ph$group_id,
+  target_genes$carbon$group_id
+))
+
+cat("Total target orthogroups:", length(target_ogs), "\n")
+
+# Filter variance data to target genes
+target_meth_var <- meth_variance %>%
+  inner_join(
+    bind_rows(
+      apul_biomin %>% select(group_id, gene_id),
+      peve_biomin %>% select(group_id, gene_id),
+      ptua_biomin %>% select(group_id, gene_id)
+    ) %>% filter(group_id %in% target_ogs),
+    by = "gene_id"
+  )
+
+target_expr_var <- expr_variance %>%
+  filter(group_id %in% target_ogs)
+```
+
+### Visualization: Target Gene Variability
+
+```{r target-gene-plots, fig.height=6, fig.width=12}
+if(nrow(target_meth_var) > 0) {
+  # Methylation CV for target genes
+  p8a <- ggplot(target_meth_var, aes(x = species, y = cv_meth, fill = species)) +
+    geom_boxplot(alpha = 0.7) +
+    geom_jitter(width = 0.2, alpha = 0.5) +
+    scale_fill_manual(values = species_colors) +
+    labs(
+      title = "Methylation Variability in Target Calcification Genes",
+      subtitle = "Ca-ATPases, V-ATPases, Carbonic Anhydrases",
+      x = "Species",
+      y = "CV Methylation"
+    ) +
+    theme(legend.position = "none",
+          axis.text.x = element_text(face = "italic"))
+  
+  print(p8a)
+  ggsave(file.path(output_dir, "target_genes_meth_cv.png"), p8a, width = 10, height = 6, dpi = 300)
+}
+
+if(nrow(target_expr_var) > 0) {
+  # Expression CV for target genes
+  p8b <- ggplot(target_expr_var, aes(x = species, y = cv_expr, fill = species)) +
+    geom_boxplot(alpha = 0.7) +
+    geom_jitter(width = 0.2, alpha = 0.5) +
+    scale_fill_manual(values = species_colors) +
+    labs(
+      title = "Expression Variability in Target Calcification Genes",
+      x = "Species",
+      y = "CV Expression"
+    ) +
+    theme(legend.position = "none",
+          axis.text.x = element_text(face = "italic"))
+  
+  print(p8b)
+  ggsave(file.path(output_dir, "target_genes_expr_cv.png"), p8b, width = 10, height = 6, dpi = 300)
+}
+```
+
+---
+
+## Analysis 7: Exon-Level Expression Variability (Alternative Splicing Proxy)
+
+### Load and Analyze Exon Data
+
+```{r exon-analysis}
+# Combine exon summaries
+exon_combined <- bind_rows(
+  apul_exon_summary %>% mutate(species_code = "apul"),
+  peve_exon_summary %>% mutate(species_code = "peve"),
+  ptua_exon_summary %>% mutate(species_code = "ptua")
+) %>%
+  mutate(species = species_lookup[species_code])
+
+# Filter to biomineralization genes
+biomin_exon <- exon_combined %>%
+  filter(group_id %in% biomin_orthogroups | gene_id %in% unlist(biomin_genes))
+
+# Summary statistics
+exon_var_summary <- biomin_exon %>%
+  group_by(species_code, species) %>%
+  summarise(
+    mean_cv = mean(cv_expr, na.rm = TRUE),
+    median_cv = median(cv_expr, na.rm = TRUE),
+    n_exons = n(),
+    .groups = "drop"
+  )
+
+print(exon_var_summary)
+```
+
+### Visualization: Exon-Level Variability
+
+```{r exon-variance-plot, fig.height=6, fig.width=10}
+if(nrow(biomin_exon) > 0) {
+  # Filter out extreme outliers for visualization
+  exon_plot_data <- biomin_exon %>%
+    filter(cv_expr < quantile(cv_expr, 0.95, na.rm = TRUE))
+  
+  p9 <- ggplot(exon_plot_data, aes(x = species, y = cv_expr, fill = species)) +
+    geom_violin(alpha = 0.6) +
+    geom_boxplot(width = 0.2, alpha = 0.8) +
+    scale_fill_manual(values = species_colors) +
+    labs(
+      title = "Exon-Level Expression Variability in Biomineralization Genes",
+      subtitle = "Proxy for alternative splicing / regulatory complexity",
+      x = "Species",
+      y = "CV Expression (Exon-Level)"
+    ) +
+    theme(legend.position = "none",
+          axis.text.x = element_text(face = "italic"))
+  
+  print(p9)
+  ggsave(file.path(output_dir, "exon_cv_violin.png"), p9, width = 10, height = 6, dpi = 300)
+}
+```
+
+---
+
+## Summary and Hypothesis Evaluation
+
+### Compile Results Summary
+
+```{r results-summary}
+# Create summary table
+summary_table <- tibble(
+  Metric = c(
+    "Mean Methylation CV",
+    "Mean GBM Level",
+    "Mean Expression CV",
+    "Remodeling Magnitude (TP2)"
+  )
+)
+
+# Add species values
+for(sp in c("apul", "peve", "ptua")) {
+  summary_table[[species_lookup[sp]]] <- c(
+    meth_variance_summary %>% filter(species_code == sp) %>% pull(mean_cv) %>% round(3),
+    gbm_summary %>% filter(species_code == sp) %>% pull(grand_mean) %>% round(2),
+    expr_var_summary %>% filter(species_code == sp) %>% pull(mean_cv) %>% round(3),
+    remodeling_magnitude %>% filter(species_code == sp, timepoint == "TP2") %>% 
+      pull(mean_abs_delta) %>% round(3)
+  )
+}
+
+print(summary_table)
+
+# Save summary
+write_csv(summary_table, file.path(output_dir, "hypothesis_summary.csv"))
+```
+
+### Hypothesis Evaluation
+
+```{r hypothesis-evaluation}
+cat("\n=== HYPOTHESIS EVALUATION ===\n\n")
+
+cat("Hypothesis 1: Acropora shows higher methylation variability (CV) than Porites\n")
+apul_cv <- meth_variance_summary %>% filter(species_code == "apul") %>% pull(mean_cv)
+peve_cv <- meth_variance_summary %>% filter(species_code == "peve") %>% pull(mean_cv)
+cat(sprintf("  Acropora CV: %.3f | Porites CV: %.3f\n", apul_cv, peve_cv))
+cat(sprintf("  Result: %s\n\n", ifelse(apul_cv > peve_cv, "SUPPORTED", "NOT SUPPORTED")))
+
+cat("Hypothesis 2: Porites has higher baseline GBM (Frontloading)\n")
+apul_gbm <- gbm_summary %>% filter(species_code == "apul") %>% pull(grand_mean)
+peve_gbm <- gbm_summary %>% filter(species_code == "peve") %>% pull(grand_mean)
+cat(sprintf("  Acropora GBM: %.2f | Porites GBM: %.2f\n", apul_gbm, peve_gbm))
+cat(sprintf("  Result: %s\n\n", ifelse(peve_gbm > apul_gbm, "SUPPORTED", "NOT SUPPORTED")))
+
+cat("Hypothesis 3: Acropora shows higher expression variability\n")
+apul_expr_cv <- expr_var_summary %>% filter(species_code == "apul") %>% pull(mean_cv)
+peve_expr_cv <- expr_var_summary %>% filter(species_code == "peve") %>% pull(mean_cv)
+cat(sprintf("  Acropora Expr CV: %.3f | Porites Expr CV: %.3f\n", apul_expr_cv, peve_expr_cv))
+cat(sprintf("  Result: %s\n\n", ifelse(apul_expr_cv > peve_expr_cv, "SUPPORTED", "NOT SUPPORTED")))
+
+cat("Hypothesis 4: Acropora shows greater methylation remodeling at TP2 (heat stress)\n")
+apul_tp2 <- remodeling_magnitude %>% filter(species_code == "apul", timepoint == "TP2") %>% pull(mean_abs_delta)
+peve_tp2 <- remodeling_magnitude %>% filter(species_code == "peve", timepoint == "TP2") %>% pull(mean_abs_delta)
+cat(sprintf("  Acropora TP2 |Δmeth|: %.3f | Porites TP2 |Δmeth|: %.3f\n", apul_tp2, peve_tp2))
+cat(sprintf("  Result: %s\n", ifelse(apul_tp2 > peve_tp2, "SUPPORTED", "NOT SUPPORTED")))
+```
+
+---
+
+## Combined Visualization
+
+```{r combined-plot, fig.height=12, fig.width=14}
+# Create combined summary figure
+combined_plot <- plot_grid(
+  p1 + theme(plot.title = element_text(size = 10)),
+  p2 + theme(plot.title = element_text(size = 10)),
+  p3 + theme(plot.title = element_text(size = 10)),
+  p5 + theme(plot.title = element_text(size = 10)),
+  ncol = 2,
+  labels = c("A", "B", "C", "D")
+)
+
+combined_plot
+ggsave(file.path(output_dir, "combined_hypothesis_figure.png"), 
+       combined_plot, width = 14, height = 12, dpi = 300)
+```
+
+---
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```
+
