@@ -1,0 +1,13 @@
+species,transition,n_shifts,n_genes
+Acropora pulchra,TP0→TP1,75472,18794
+Acropora pulchra,TP1→TP2,98330,20571
+Acropora pulchra,TP2→TP3,91333,20095
+Acropora pulchra,TP3→TP4,87357,19449
+Pocillopora tuahiniensis,TP0→TP1,77323,17466
+Pocillopora tuahiniensis,TP1→TP2,88936,17530
+Pocillopora tuahiniensis,TP2→TP3,91090,18219
+Pocillopora tuahiniensis,TP3→TP4,81737,17885
+Porites evermanni,TP0→TP1,109360,22646
+Porites evermanni,TP1→TP2,123573,23364
+Porites evermanni,TP2→TP3,111760,23203
+Porites evermanni,TP3→TP4,110361,23854

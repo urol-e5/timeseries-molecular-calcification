@@ -1,0 +1,4 @@
+hypothesis,species,n_genes,mean_stress_gbm,mean_baseline_gbm,gbm_increase,pct_increase,t_test_p,h2_supported,interpretation
+H2,Acropora pulchra,170,17.46642160357364,16.341724070888375,1.1246975326852602,6.882367660881199,8.661314935156987e-21,TRUE,SUPPORTED: Higher GBM at stress timepoints
+H2,Porites evermanni,168,14.24387730826132,14.808952591561898,-0.5650752833005791,-3.8157680619664993,2.423652306658036e-5,FALSE,NOT SUPPORTED: No increase in GBM at stress timepoints
+H2,Pocillopora tuahiniensis,157,7.8507729564423014,7.949466875481024,-0.09869391903872261,-1.2415161995721962,9.756219658509762e-5,FALSE,NOT SUPPORTED: No increase in GBM at stress timepoints
