@@ -379,20 +379,30 @@ ggsave(file.path(output_dir, "expr_fold_changes.png"), p_fc, width = 12, height 
 ```{r exon-variability}
 # Function to calculate exon variability by timepoint
 calculate_exon_variability <- function(exon_df, biomin_gene_ids, species_code) {
-  # Filter to biomin genes
+  # Clean gene IDs - remove "gene-" prefix if present (for Peve and Ptua)
+  exon_df <- exon_df %>%
+    mutate(gene_id_clean = str_remove(gene_id, "^gene-"))
+  
+  # Filter to biomin genes using cleaned IDs
   exon_biomin <- exon_df %>%
-    filter(gene_id %in% biomin_gene_ids)
+    filter(gene_id_clean %in% biomin_gene_ids)
+  
+  cat(sprintf("  %s: %d exons matched from %d biomin genes\n", 
+              species_code, nrow(exon_biomin), length(biomin_gene_ids)))
   
   if(nrow(exon_biomin) == 0) {
+    cat(sprintf("    WARNING: No matches found for %s\n", species_code))
+    cat(sprintf("    Exon gene IDs sample: %s\n", paste(head(exon_df$gene_id_clean, 3), collapse = ", ")))
+    cat(sprintf("    Biomin gene IDs sample: %s\n", paste(head(biomin_gene_ids, 3), collapse = ", ")))
     return(tibble())
   }
   
   # Get sample columns
-  sample_cols <- names(exon_df)[!names(exon_df) %in% c("gene_id", "e_id", "chr", "strand", "start", "end")]
+  sample_cols <- names(exon_df)[!names(exon_df) %in% c("gene_id", "gene_id_clean", "e_id", "chr", "strand", "start", "end")]
   
   # Reshape to long format
   exon_long <- exon_biomin %>%
-    select(gene_id, e_id, all_of(sample_cols)) %>%
+    select(gene_id_clean, e_id, all_of(sample_cols)) %>%
     pivot_longer(cols = all_of(sample_cols), names_to = "sample_id", values_to = "count") %>%
     mutate(
       timepoint = str_extract(sample_id, "TP\\d+"),
@@ -401,7 +411,7 @@ calculate_exon_variability <- function(exon_df, biomin_gene_ids, species_code) {
   
   # Calculate CV of exon expression within each gene per timepoint
   exon_cv_by_tp <- exon_long %>%
-    group_by(gene_id, timepoint, sample_id) %>%
+    group_by(gene_id = gene_id_clean, timepoint, sample_id) %>%
     summarise(
       n_exons = n(),
       mean_exon_expr = mean(log_count, na.rm = TRUE),
@@ -426,6 +436,7 @@ calculate_exon_variability <- function(exon_df, biomin_gene_ids, species_code) {
 }
 
 # Calculate for each species
+cat("Calculating exon variability by species:\n")
 apul_exon_cv <- calculate_exon_variability(apul_exon_counts, biomin_genes$apul, "apul")
 peve_exon_cv <- calculate_exon_variability(peve_exon_counts, biomin_genes$peve, "peve")
 ptua_exon_cv <- calculate_exon_variability(ptua_exon_counts, biomin_genes$ptua, "ptua")
@@ -433,11 +444,32 @@ ptua_exon_cv <- calculate_exon_variability(ptua_exon_counts, biomin_genes$ptua, 
 exon_cv_all <- bind_rows(apul_exon_cv, peve_exon_cv, ptua_exon_cv) %>%
   mutate(species = species_lookup[species_code])
 
-cat("Exon variability calculated for:\n")
+cat("\nExon variability summary by species:\n")
 exon_cv_all %>%
   group_by(species_code) %>%
-  summarise(n_genes = n_distinct(gene_id)) %>%
+  summarise(n_genes = n_distinct(gene_id), n_records = n()) %>%
   print()
+
+# If some species have no data, show diagnostic info
+if(nrow(peve_exon_cv) == 0) {
+  cat("\nDiagnostic for Peve:\n")
+  peve_exon_ids <- peve_exon_counts %>% 
+    mutate(clean_id = str_remove(gene_id, "^gene-")) %>% 
+    pull(clean_id) %>% unique()
+  cat("  Sample exon IDs:", paste(head(peve_exon_ids, 5), collapse = ", "), "\n")
+  cat("  Sample biomin IDs:", paste(head(biomin_genes$peve, 5), collapse = ", "), "\n")
+  cat("  Overlap:", sum(biomin_genes$peve %in% peve_exon_ids), "genes\n")
+}
+
+if(nrow(ptua_exon_cv) == 0) {
+  cat("\nDiagnostic for Ptua:\n")
+  ptua_exon_ids <- ptua_exon_counts %>% 
+    mutate(clean_id = str_remove(gene_id, "^gene-")) %>% 
+    pull(clean_id) %>% unique()
+  cat("  Sample exon IDs:", paste(head(ptua_exon_ids, 5), collapse = ", "), "\n")
+  cat("  Sample biomin IDs:", paste(head(biomin_genes$ptua, 5), collapse = ", "), "\n")
+  cat("  Overlap:", sum(biomin_genes$ptua %in% ptua_exon_ids), "genes\n")
+}
 ```
 
 ### Calculate Exon Variability Change
