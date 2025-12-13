@@ -377,32 +377,56 @@ ggsave(file.path(output_dir, "expr_fold_changes.png"), p_fc, width = 12, height 
 ### Calculate Exon Variability by Gene and Timepoint
 
 ```{r exon-variability}
-# Function to calculate exon variability by timepoint
-calculate_exon_variability <- function(exon_df, biomin_gene_ids, species_code) {
-  # Clean gene IDs - remove "gene-" prefix if present (for Peve and Ptua)
+# Load exon summary files to get gene_id -> group_id mapping
+apul_exon_mapping <- read_csv("../output/40-exon-count-matrix/apul-exon_summary_by_ortholog.csv",
+                              show_col_types = FALSE) %>%
+  select(gene_id, group_id) %>%
+  distinct() %>%
+  mutate(gene_id_clean = str_remove(gene_id, "^gene-"))
+
+peve_exon_mapping <- read_csv("../output/40-exon-count-matrix/peve-exon_summary_by_ortholog.csv",
+                              show_col_types = FALSE) %>%
+  select(gene_id, group_id) %>%
+  distinct() %>%
+  mutate(gene_id_clean = str_remove(gene_id, "^gene-"))
+
+ptua_exon_mapping <- read_csv("../output/40-exon-count-matrix/ptua-exon_summary_by_ortholog.csv",
+                              show_col_types = FALSE) %>%
+  select(gene_id, group_id) %>%
+  distinct() %>%
+  mutate(gene_id_clean = str_remove(gene_id, "^gene-"))
+
+# Function to calculate exon variability by timepoint using group_id for matching
+calculate_exon_variability_v2 <- function(exon_df, biomin_df, exon_mapping, species_code) {
+  # Get biomin ortholog groups
+  biomin_groups <- unique(biomin_df$group_id)
+  
+  # Clean gene IDs in exon data
   exon_df <- exon_df %>%
     mutate(gene_id_clean = str_remove(gene_id, "^gene-"))
   
-  # Filter to biomin genes using cleaned IDs
-  exon_biomin <- exon_df %>%
-    filter(gene_id_clean %in% biomin_gene_ids)
+  # Add group_id mapping to exon data
+  exon_df <- exon_df %>%
+    left_join(exon_mapping %>% select(gene_id_clean, group_id), by = "gene_id_clean")
   
-  cat(sprintf("  %s: %d exons matched from %d biomin genes\n", 
-              species_code, nrow(exon_biomin), length(biomin_gene_ids)))
+  # Filter to biomin genes using ortholog groups
+  exon_biomin <- exon_df %>%
+    filter(group_id %in% biomin_groups)
+  
+  cat(sprintf("  %s: %d exons matched via %d ortholog groups\n", 
+              species_code, nrow(exon_biomin), n_distinct(exon_biomin$group_id)))
   
   if(nrow(exon_biomin) == 0) {
     cat(sprintf("    WARNING: No matches found for %s\n", species_code))
-    cat(sprintf("    Exon gene IDs sample: %s\n", paste(head(exon_df$gene_id_clean, 3), collapse = ", ")))
-    cat(sprintf("    Biomin gene IDs sample: %s\n", paste(head(biomin_gene_ids, 3), collapse = ", ")))
     return(tibble())
   }
   
   # Get sample columns
-  sample_cols <- names(exon_df)[!names(exon_df) %in% c("gene_id", "gene_id_clean", "e_id", "chr", "strand", "start", "end")]
+  sample_cols <- names(exon_df)[!names(exon_df) %in% c("gene_id", "gene_id_clean", "group_id", "e_id", "chr", "strand", "start", "end")]
   
   # Reshape to long format
   exon_long <- exon_biomin %>%
-    select(gene_id_clean, e_id, all_of(sample_cols)) %>%
+    select(gene_id_clean, group_id, e_id, all_of(sample_cols)) %>%
     pivot_longer(cols = all_of(sample_cols), names_to = "sample_id", values_to = "count") %>%
     mutate(
       timepoint = str_extract(sample_id, "TP\\d+"),
@@ -411,7 +435,7 @@ calculate_exon_variability <- function(exon_df, biomin_gene_ids, species_code) {
   
   # Calculate CV of exon expression within each gene per timepoint
   exon_cv_by_tp <- exon_long %>%
-    group_by(gene_id = gene_id_clean, timepoint, sample_id) %>%
+    group_by(gene_id = gene_id_clean, group_id, timepoint, sample_id) %>%
     summarise(
       n_exons = n(),
       mean_exon_expr = mean(log_count, na.rm = TRUE),
@@ -423,7 +447,7 @@ calculate_exon_variability <- function(exon_df, biomin_gene_ids, species_code) {
   
   # Average CV across samples within each timepoint
   exon_cv_summary <- exon_cv_by_tp %>%
-    group_by(gene_id, timepoint) %>%
+    group_by(gene_id, group_id, timepoint) %>%
     summarise(
       mean_cv_exon = mean(cv_exon, na.rm = TRUE),
       sd_cv_exon = sd(cv_exon, na.rm = TRUE),
@@ -435,11 +459,11 @@ calculate_exon_variability <- function(exon_df, biomin_gene_ids, species_code) {
   return(exon_cv_summary)
 }
 
-# Calculate for each species
-cat("Calculating exon variability by species:\n")
-apul_exon_cv <- calculate_exon_variability(apul_exon_counts, biomin_genes$apul, "apul")
-peve_exon_cv <- calculate_exon_variability(peve_exon_counts, biomin_genes$peve, "peve")
-ptua_exon_cv <- calculate_exon_variability(ptua_exon_counts, biomin_genes$ptua, "ptua")
+# Calculate for each species using ortholog group matching
+cat("Calculating exon variability by species (using ortholog groups):\n")
+apul_exon_cv <- calculate_exon_variability_v2(apul_exon_counts, apul_biomin, apul_exon_mapping, "apul")
+peve_exon_cv <- calculate_exon_variability_v2(peve_exon_counts, peve_biomin, peve_exon_mapping, "peve")
+ptua_exon_cv <- calculate_exon_variability_v2(ptua_exon_counts, ptua_biomin, ptua_exon_mapping, "ptua")
 
 exon_cv_all <- bind_rows(apul_exon_cv, peve_exon_cv, ptua_exon_cv) %>%
   mutate(species = species_lookup[species_code])
@@ -447,29 +471,8 @@ exon_cv_all <- bind_rows(apul_exon_cv, peve_exon_cv, ptua_exon_cv) %>%
 cat("\nExon variability summary by species:\n")
 exon_cv_all %>%
   group_by(species_code) %>%
-  summarise(n_genes = n_distinct(gene_id), n_records = n()) %>%
+  summarise(n_genes = n_distinct(gene_id), n_groups = n_distinct(group_id), n_records = n()) %>%
   print()
-
-# If some species have no data, show diagnostic info
-if(nrow(peve_exon_cv) == 0) {
-  cat("\nDiagnostic for Peve:\n")
-  peve_exon_ids <- peve_exon_counts %>% 
-    mutate(clean_id = str_remove(gene_id, "^gene-")) %>% 
-    pull(clean_id) %>% unique()
-  cat("  Sample exon IDs:", paste(head(peve_exon_ids, 5), collapse = ", "), "\n")
-  cat("  Sample biomin IDs:", paste(head(biomin_genes$peve, 5), collapse = ", "), "\n")
-  cat("  Overlap:", sum(biomin_genes$peve %in% peve_exon_ids), "genes\n")
-}
-
-if(nrow(ptua_exon_cv) == 0) {
-  cat("\nDiagnostic for Ptua:\n")
-  ptua_exon_ids <- ptua_exon_counts %>% 
-    mutate(clean_id = str_remove(gene_id, "^gene-")) %>% 
-    pull(clean_id) %>% unique()
-  cat("  Sample exon IDs:", paste(head(ptua_exon_ids, 5), collapse = ", "), "\n")
-  cat("  Sample biomin IDs:", paste(head(biomin_genes$ptua, 5), collapse = ", "), "\n")
-  cat("  Overlap:", sum(biomin_genes$ptua %in% ptua_exon_ids), "genes\n")
-}
 ```
 
 ### Calculate Exon Variability Change
@@ -477,7 +480,7 @@ if(nrow(ptua_exon_cv) == 0) {
 ```{r exon-variability-change}
 # Pivot to wide format for comparison
 exon_cv_wide <- exon_cv_all %>%
-  select(species_code, species, gene_id, timepoint, mean_cv_exon) %>%
+  select(species_code, species, gene_id, group_id, timepoint, mean_cv_exon) %>%
   pivot_wider(names_from = timepoint, values_from = mean_cv_exon, names_prefix = "cv_")
 
 # Calculate variability changes
@@ -535,10 +538,28 @@ ggsave(file.path(output_dir, "exon_variability_by_tp.png"), p_exon_var, width = 
 ### Calculate GBM by Timepoint
 
 ```{r gbm-by-timepoint}
+# First, add group_id to biomin_meth by joining with biomin counts
+# Create gene_id to group_id mapping from biomin counts
+biomin_gene_group_map <- bind_rows(
+  apul_biomin %>% select(gene_id, group_id) %>% mutate(species_code = "apul"),
+  peve_biomin %>% select(gene_id, group_id) %>% mutate(species_code = "peve"),
+  ptua_biomin %>% select(gene_id, group_id) %>% mutate(species_code = "ptua")
+)
+
+# Add group_id to biomin_meth
+biomin_meth_grouped <- biomin_meth %>%
+  left_join(biomin_gene_group_map, by = c("species_code", "gene_id_clean" = "gene_id"))
+
+cat("Biomin meth with group_id:\n")
+biomin_meth_grouped %>%
+  group_by(species_code) %>%
+  summarise(n_with_group = sum(!is.na(group_id)), n_total = n()) %>%
+  print()
+
 # Calculate mean GBM per gene per timepoint
-gbm_by_tp <- biomin_meth %>%
+gbm_by_tp <- biomin_meth_grouped %>%
   filter(!is.na(methylation)) %>%
-  group_by(species_code, species, gene_id_clean, timepoint) %>%
+  group_by(species_code, species, gene_id_clean, group_id, timepoint) %>%
   summarise(
     mean_meth = mean(methylation, na.rm = TRUE),
     sd_meth = sd(methylation, na.rm = TRUE),
@@ -548,7 +569,7 @@ gbm_by_tp <- biomin_meth %>%
 
 # Pivot to wide format
 gbm_wide <- gbm_by_tp %>%
-  select(species_code, species, gene_id_clean, timepoint, mean_meth) %>%
+  select(species_code, species, gene_id_clean, group_id, timepoint, mean_meth) %>%
   pivot_wider(names_from = timepoint, values_from = mean_meth, names_prefix = "meth_")
 
 # Calculate GBM changes and overall levels
@@ -572,7 +593,7 @@ gbm_analysis <- gbm_wide %>%
 cat("GBM analysis genes per species:\n")
 gbm_analysis %>%
   group_by(species_code) %>%
-  summarise(n_genes = n()) %>%
+  summarise(n_genes = n(), n_with_group = sum(!is.na(group_id))) %>%
   print()
 ```
 
@@ -794,10 +815,10 @@ ggsave(file.path(output_dir, "h2_high_expr_high_gbm.png"), p_h2, width = 14, hei
 ### Identify High Variability Genes at Stress Timepoints
 
 ```{r identify-high-var-stress}
-# Calculate stress timepoint exon variability
+# Calculate stress timepoint exon variability (using group_id for matching)
 stress_exon_var <- exon_cv_all %>%
   filter(timepoint %in% c("TP2", "TP3")) %>%
-  group_by(species_code, gene_id) %>%
+  group_by(species_code, gene_id, group_id) %>%
   summarise(
     mean_stress_cv = mean(mean_cv_exon, na.rm = TRUE),
     .groups = "drop"
@@ -822,13 +843,23 @@ high_var_genes %>%
 ### Test H3: High Variability → Differential GBM
 
 ```{r test-h3}
-# Merge with GBM change data
+# Merge with GBM change data using group_id (ortholog group)
 h3_data <- high_var_genes %>%
-  inner_join(gbm_analysis, by = c("species_code", "gene_id" = "gene_id_clean")) %>%
+  filter(!is.na(group_id)) %>%
+  inner_join(
+    gbm_analysis %>% filter(!is.na(group_id)), 
+    by = c("species_code", "group_id")
+  ) %>%
   mutate(
     abs_gbm_change = abs(gbm_stress_change),
     species = species_lookup[species_code]
   )
+
+cat("H3 data available by species:\n")
+h3_data %>%
+  group_by(species_code) %>%
+  summarise(n_genes = n(), n_high_var = sum(high_var), n_low_var = sum(!high_var)) %>%
+  print()
 
 # Compare GBM change magnitude between high and low variability genes
 h3_comparison <- h3_data %>%
@@ -845,24 +876,53 @@ cat("\n=== HYPOTHESIS 3 RESULTS ===\n")
 cat("GBM change magnitude by exon variability category:\n")
 print(h3_comparison)
 
-# Statistical tests
-h3_tests <- h3_data %>%
-  group_by(species_code) %>%
-  summarise(
-    wilcox_p = wilcox.test(abs_gbm_change ~ high_var)$p.value,
-    high_var_mean_change = mean(abs_gbm_change[high_var], na.rm = TRUE),
-    low_var_mean_change = mean(abs_gbm_change[!high_var], na.rm = TRUE),
-    .groups = "drop"
+# Statistical tests - handle each species separately to avoid errors
+run_h3_test <- function(data, sp_code) {
+  sp_data <- data %>% filter(species_code == sp_code)
+  
+  if(nrow(sp_data) == 0 || sum(sp_data$high_var) < 3 || sum(!sp_data$high_var) < 3) {
+    return(tibble(
+      species_code = sp_code,
+      wilcox_p = NA_real_,
+      high_var_mean_change = NA_real_,
+      low_var_mean_change = NA_real_,
+      h3_supported = NA,
+      interpretation = "INSUFFICIENT DATA: Not enough genes with exon variability data"
+    ))
+  }
+  
+  test_result <- tryCatch({
+    wilcox.test(abs_gbm_change ~ high_var, data = sp_data)$p.value
+  }, error = function(e) NA_real_)
+  
+  tibble(
+    species_code = sp_code,
+    wilcox_p = test_result,
+    high_var_mean_change = mean(sp_data$abs_gbm_change[sp_data$high_var], na.rm = TRUE),
+    low_var_mean_change = mean(sp_data$abs_gbm_change[!sp_data$high_var], na.rm = TRUE)
   ) %>%
-  mutate(
-    h3_supported = high_var_mean_change > low_var_mean_change,
-    interpretation = ifelse(h3_supported, 
-                           "SUPPORTED: High variability genes show more differential GBM",
-                           "NOT SUPPORTED: No difference in GBM changes")
-  )
+    mutate(
+      h3_supported = high_var_mean_change > low_var_mean_change,
+      interpretation = case_when(
+        is.na(h3_supported) ~ "INSUFFICIENT DATA",
+        h3_supported ~ "SUPPORTED: High variability genes show more differential GBM",
+        TRUE ~ "NOT SUPPORTED: No difference in GBM changes"
+      )
+    )
+}
+
+# Run tests for all species (even if some have no data)
+h3_tests <- bind_rows(
+  run_h3_test(h3_data, "apul"),
+  run_h3_test(h3_data, "peve"),
+  run_h3_test(h3_data, "ptua")
+)
 
 cat("\nStatistical tests:\n")
 print(h3_tests)
+
+# Show why some species might be missing
+cat("\nNote: Species may lack H3 data due to gene ID mismatches between exon and biomin datasets.\n")
 ```
 
 ### Visualization: H3
