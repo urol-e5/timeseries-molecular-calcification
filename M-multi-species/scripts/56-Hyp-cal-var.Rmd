@@ -1,0 +1,708 @@
+---
+title: "Calcification Gene Expression Variability Across Coral Species"
+author: "Timeseries Molecular Calcification"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  cache = TRUE
+)
+```
+
+# Introduction
+
+This analysis tests the hypothesis that **gene expression of calcification genes is more variable in *Acropora* and *Pocillopora* than *Porites***.
+
+To assess variability, we examine expression across samples and time, considering both:
+1. Gene-level expression variability
+2. Exon-level expression variability (alternative splicing patterns)
+
+# Load Libraries
+
+```{r libraries}
+library(tidyverse)
+library(DESeq2)
+library(ggplot2)
+library(ggpubr)
+library(pheatmap)
+library(viridis)
+library(reshape2)
+library(scales)
+library(knitr)
+library(kableExtra)
+```
+
+# Data Loading
+
+## Biomin Expression Counts
+
+Expression matrices of calcification genes across timepoints and treatments for each species.
+
+```{r load-biomin-counts}
+# Load biomin count data from GitHub
+apul_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/apul_biomin_counts.csv")
+peve_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/peve_biomin_counts.csv")
+ptua_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/ptua_biomin_counts.csv")
+
+# Preview the data
+cat("Apul biomin genes:", nrow(apul_biomin), "\n")
+cat("Peve biomin genes:", nrow(peve_biomin), "\n")
+cat("Ptua biomin genes:", nrow(ptua_biomin), "\n")
+```
+
+## Annotation File
+
+```{r load-annotations}
+# Load ortholog annotations
+ortho_annot <- read_csv("../output/12-ortho-annot/ortholog_groups_annotated.csv")
+
+# Preview structure
+glimpse(ortho_annot)
+```
+
+## Exon-Level Expression Data
+
+```{r load-exon-data}
+# Load exon summary files with ortholog group mappings
+# These files contain pre-computed variability metrics per exon
+
+apul_exon_summary <- read_csv("../output/40-exon-count-matrix/apul-exon_summary_by_ortholog.csv")
+peve_exon_summary <- read_csv("../output/40-exon-count-matrix/peve-exon_summary_by_ortholog.csv")
+ptua_exon_summary <- read_csv("../output/40-exon-count-matrix/ptua-exon_summary_by_ortholog.csv")
+
+cat("Apul exons:", nrow(apul_exon_summary), "\n")
+cat("Peve exons:", nrow(peve_exon_summary), "\n")
+cat("Ptua exons:", nrow(ptua_exon_summary), "\n")
+```
+
+# Data Preprocessing
+
+## Extract Sample Metadata from Column Names
+
+```{r extract-metadata}
+# Function to extract sample info from column names
+extract_sample_info <- function(counts_df, species_prefix) {
+  sample_cols <- colnames(counts_df)[!colnames(counts_df) %in% c("group_id", "gene_id")]
+  
+  sample_info <- data.frame(
+    sample_id = sample_cols,
+    stringsAsFactors = FALSE
+  ) %>%
+    mutate(
+      # Extract colony ID and timepoint
+      parts = str_match(sample_id, paste0(species_prefix, "-(\\d+)-TP(\\d+)")),
+      colony = parts[,2],
+      timepoint = paste0("TP", parts[,3]),
+      species = species_prefix
+    ) %>%
+    select(sample_id, species, colony, timepoint)
+  
+  return(sample_info)
+}
+
+# Extract metadata for each species
+apul_meta <- extract_sample_info(apul_biomin, "ACR")
+peve_meta <- extract_sample_info(peve_biomin, "POR")
+ptua_meta <- extract_sample_info(ptua_biomin, "POC")
+
+# Combine metadata
+all_meta <- bind_rows(apul_meta, peve_meta, ptua_meta) %>%
+  mutate(species_full = case_when(
+    species == "ACR" ~ "Acropora pulchra",
+    species == "POR" ~ "Porites evermanni",
+    species == "POC" ~ "Pocillopora tuahiniensis"
+  ))
+
+kable(head(all_meta, 10)) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+## Get Common Ortholog Groups
+
+```{r common-orthologs}
+# Find ortholog groups present in all three species' biomin datasets
+apul_groups <- unique(apul_biomin$group_id)
+peve_groups <- unique(peve_biomin$group_id)
+ptua_groups <- unique(ptua_biomin$group_id)
+
+# Common calcification-related ortholog groups
+common_groups <- Reduce(intersect, list(apul_groups, peve_groups, ptua_groups))
+
+cat("Apul biomin ortholog groups:", length(apul_groups), "\n")
+cat("Peve biomin ortholog groups:", length(peve_groups), "\n")
+cat("Ptua biomin ortholog groups:", length(ptua_groups), "\n")
+cat("Common ortholog groups:", length(common_groups), "\n")
+```
+
+# Gene-Level Expression Variability Analysis
+
+## Calculate Coefficient of Variation (CV) for Each Gene
+
+```{r calculate-gene-cv}
+# Function to calculate CV for each gene across all samples
+calc_gene_cv <- function(counts_df, species_name) {
+  # Get sample columns (exclude group_id and gene_id)
+  sample_cols <- colnames(counts_df)[!colnames(counts_df) %in% c("group_id", "gene_id")]
+  
+  counts_matrix <- counts_df %>%
+    select(all_of(sample_cols)) %>%
+    as.matrix()
+  
+  # Calculate mean, SD, and CV for each gene
+  gene_stats <- data.frame(
+    group_id = counts_df$group_id,
+    gene_id = counts_df$gene_id,
+    mean_expr = rowMeans(counts_matrix, na.rm = TRUE),
+    sd_expr = apply(counts_matrix, 1, sd, na.rm = TRUE),
+    n_samples = ncol(counts_matrix),
+    species = species_name
+  ) %>%
+    mutate(
+      cv_expr = sd_expr / mean_expr,
+      # Handle cases where mean is 0
+      cv_expr = ifelse(is.infinite(cv_expr) | is.nan(cv_expr), NA, cv_expr)
+    )
+  
+  return(gene_stats)
+}
+
+# Calculate CV for each species
+apul_cv <- calc_gene_cv(apul_biomin, "Acropora")
+peve_cv <- calc_gene_cv(peve_biomin, "Porites")
+ptua_cv <- calc_gene_cv(ptua_biomin, "Pocillopora")
+
+# Combine all species
+all_gene_cv <- bind_rows(apul_cv, peve_cv, ptua_cv) %>%
+  # Filter for expressed genes (mean > 1)
+  filter(mean_expr > 1)
+
+cat("Genes with expression > 1:\n")
+cat("  Acropora:", sum(all_gene_cv$species == "Acropora"), "\n")
+cat("  Porites:", sum(all_gene_cv$species == "Porites"), "\n")
+cat("  Pocillopora:", sum(all_gene_cv$species == "Pocillopora"), "\n")
+```
+
+## Compare CV Distributions Across Species
+
+```{r cv-distribution-comparison, fig.height=8, fig.width=10}
+# Summary statistics by species
+cv_summary <- all_gene_cv %>%
+  group_by(species) %>%
+  summarise(
+    n_genes = n(),
+    mean_cv = mean(cv_expr, na.rm = TRUE),
+    median_cv = median(cv_expr, na.rm = TRUE),
+    sd_cv = sd(cv_expr, na.rm = TRUE),
+    iqr_cv = IQR(cv_expr, na.rm = TRUE),
+    q25 = quantile(cv_expr, 0.25, na.rm = TRUE),
+    q75 = quantile(cv_expr, 0.75, na.rm = TRUE)
+  )
+
+kable(cv_summary, digits = 3, caption = "Gene Expression CV Summary by Species") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Violin plot of CV distribution
+p1 <- ggplot(all_gene_cv, aes(x = species, y = cv_expr, fill = species)) +
+  geom_violin(alpha = 0.7, trim = TRUE) +
+  geom_boxplot(width = 0.15, fill = "white", outlier.size = 0.5) +
+  scale_fill_manual(values = c("Acropora" = "#E64B35", 
+                                "Porites" = "#4DBBD5", 
+                                "Pocillopora" = "#00A087")) +
+  labs(
+    title = "Gene Expression Variability (CV) in Calcification Genes",
+    subtitle = "Higher CV indicates more variable expression across samples",
+    x = "Species",
+    y = "Coefficient of Variation (CV)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+
+print(p1)
+```
+
+## Statistical Tests for CV Differences
+
+```{r cv-statistical-tests}
+# Kruskal-Wallis test for overall differences
+kw_test <- kruskal.test(cv_expr ~ species, data = all_gene_cv)
+cat("Kruskal-Wallis test for CV differences:\n")
+print(kw_test)
+
+# Pairwise Wilcoxon tests
+pairwise_tests <- pairwise.wilcox.test(
+  all_gene_cv$cv_expr, 
+  all_gene_cv$species, 
+  p.adjust.method = "bonferroni"
+)
+cat("\nPairwise Wilcoxon tests (Bonferroni adjusted):\n")
+print(pairwise_tests)
+
+# Compare specific pairs
+acro_vs_porites <- wilcox.test(
+  all_gene_cv$cv_expr[all_gene_cv$species == "Acropora"],
+  all_gene_cv$cv_expr[all_gene_cv$species == "Porites"]
+)
+
+pocillo_vs_porites <- wilcox.test(
+  all_gene_cv$cv_expr[all_gene_cv$species == "Pocillopora"],
+  all_gene_cv$cv_expr[all_gene_cv$species == "Porites"]
+)
+
+cat("\nAcropora vs Porites p-value:", acro_vs_porites$p.value, "\n")
+cat("Pocillopora vs Porites p-value:", pocillo_vs_porites$p.value, "\n")
+```
+
+## CV Comparison for Common Ortholog Groups
+
+```{r cv-common-orthologs, fig.height=8, fig.width=12}
+# Filter for common ortholog groups only
+common_cv <- all_gene_cv %>%
+  filter(group_id %in% common_groups)
+
+cat("Common ortholog genes with expression > 1:\n")
+cat("  Acropora:", sum(common_cv$species == "Acropora"), "\n")
+cat("  Porites:", sum(common_cv$species == "Porites"), "\n")
+cat("  Pocillopora:", sum(common_cv$species == "Pocillopora"), "\n")
+
+# Summary for common orthologs
+common_cv_summary <- common_cv %>%
+  group_by(species) %>%
+  summarise(
+    n_genes = n(),
+    mean_cv = mean(cv_expr, na.rm = TRUE),
+    median_cv = median(cv_expr, na.rm = TRUE),
+    sd_cv = sd(cv_expr, na.rm = TRUE)
+  )
+
+kable(common_cv_summary, digits = 3, 
+      caption = "CV Summary for Common Calcification Orthologs") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Paired comparison plot for common orthologs
+common_wide <- common_cv %>%
+  select(group_id, species, cv_expr) %>%
+  pivot_wider(names_from = species, values_from = cv_expr) %>%
+  drop_na()
+
+p2 <- ggplot(common_wide) +
+  geom_point(aes(x = Porites, y = Acropora), alpha = 0.6, color = "#E64B35") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray50") +
+  labs(
+    title = "Acropora vs Porites CV (Common Orthologs)",
+    subtitle = paste("Points above line: higher variability in Acropora\n",
+                     "n =", nrow(common_wide), "genes"),
+    x = "Porites CV",
+    y = "Acropora CV"
+  ) +
+  theme_minimal() +
+  coord_equal()
+
+p3 <- ggplot(common_wide) +
+  geom_point(aes(x = Porites, y = Pocillopora), alpha = 0.6, color = "#00A087") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray50") +
+  labs(
+    title = "Pocillopora vs Porites CV (Common Orthologs)",
+    subtitle = paste("Points above line: higher variability in Pocillopora\n",
+                     "n =", nrow(common_wide), "genes"),
+    x = "Porites CV",
+    y = "Pocillopora CV"
+  ) +
+  theme_minimal() +
+  coord_equal()
+
+ggarrange(p2, p3, ncol = 2)
+```
+
+# Temporal Variability Analysis
+
+## Calculate Within-Colony and Between-Colony Variability
+
+```{r temporal-variability}
+# Function to calculate temporal variability components
+calc_temporal_variability <- function(counts_df, meta_df, species_name) {
+  sample_cols <- colnames(counts_df)[!colnames(counts_df) %in% c("group_id", "gene_id")]
+  
+  results <- counts_df %>%
+    pivot_longer(cols = all_of(sample_cols), 
+                 names_to = "sample_id", 
+                 values_to = "count") %>%
+    left_join(meta_df, by = "sample_id") %>%
+    group_by(group_id, gene_id, colony) %>%
+    summarise(
+      within_colony_cv = sd(count, na.rm = TRUE) / mean(count, na.rm = TRUE),
+      mean_count = mean(count, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    group_by(group_id, gene_id) %>%
+    summarise(
+      mean_within_colony_cv = mean(within_colony_cv, na.rm = TRUE),
+      between_colony_cv = sd(mean_count, na.rm = TRUE) / mean(mean_count, na.rm = TRUE),
+      overall_mean = mean(mean_count, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      species = species_name,
+      mean_within_colony_cv = ifelse(is.infinite(mean_within_colony_cv) | is.nan(mean_within_colony_cv), 
+                                     NA, mean_within_colony_cv),
+      between_colony_cv = ifelse(is.infinite(between_colony_cv) | is.nan(between_colony_cv), 
+                                 NA, between_colony_cv)
+    )
+  
+  return(results)
+}
+
+# Calculate temporal variability
+apul_temporal <- calc_temporal_variability(apul_biomin, apul_meta, "Acropora")
+peve_temporal <- calc_temporal_variability(peve_biomin, peve_meta, "Porites")
+ptua_temporal <- calc_temporal_variability(ptua_biomin, ptua_meta, "Pocillopora")
+
+# Combine all
+all_temporal <- bind_rows(apul_temporal, peve_temporal, ptua_temporal) %>%
+  filter(overall_mean > 1)  # Filter for expressed genes
+
+# Summary
+temporal_summary <- all_temporal %>%
+  group_by(species) %>%
+  summarise(
+    n_genes = n(),
+    mean_within_cv = mean(mean_within_colony_cv, na.rm = TRUE),
+    mean_between_cv = mean(between_colony_cv, na.rm = TRUE),
+    median_within_cv = median(mean_within_colony_cv, na.rm = TRUE),
+    median_between_cv = median(between_colony_cv, na.rm = TRUE)
+  )
+
+kable(temporal_summary, digits = 3, 
+      caption = "Temporal Variability Summary (Within vs Between Colony)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+## Visualize Temporal Variability
+
+```{r temporal-plots, fig.height=8, fig.width=12}
+# Reshape for plotting
+temporal_long <- all_temporal %>%
+  pivot_longer(
+    cols = c(mean_within_colony_cv, between_colony_cv),
+    names_to = "variability_type",
+    values_to = "cv"
+  ) %>%
+  mutate(
+    variability_type = ifelse(variability_type == "mean_within_colony_cv",
+                              "Within-Colony (Temporal)", "Between-Colony")
+  )
+
+p4 <- ggplot(temporal_long, aes(x = species, y = cv, fill = variability_type)) +
+  geom_violin(alpha = 0.7, position = position_dodge(0.8), trim = TRUE) +
+  geom_boxplot(width = 0.15, position = position_dodge(0.8), 
+               fill = "white", outlier.size = 0.5) +
+  scale_fill_manual(values = c("Within-Colony (Temporal)" = "#7570B3", 
+                                "Between-Colony" = "#E7298A")) +
+  labs(
+    title = "Within-Colony (Temporal) vs Between-Colony Variability",
+    subtitle = "Calcification gene expression in coral species",
+    x = "Species",
+    y = "Coefficient of Variation (CV)",
+    fill = "Variability Type"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+
+print(p4)
+```
+
+# Exon-Level Expression Variability
+
+## Filter Exon Data for Calcification Genes
+
+```{r filter-exon-biomin}
+# Get the group_ids from biomin datasets
+biomin_groups_apul <- unique(apul_biomin$group_id)
+biomin_groups_peve <- unique(peve_biomin$group_id)
+biomin_groups_ptua <- unique(ptua_biomin$group_id)
+
+# Filter exon summary data for calcification-related genes using group_id
+apul_exon_biomin <- apul_exon_summary %>%
+  filter(group_id %in% biomin_groups_apul) %>%
+  mutate(species = "Acropora")
+
+peve_exon_biomin <- peve_exon_summary %>%
+  filter(group_id %in% biomin_groups_peve) %>%
+  mutate(species = "Porites")
+
+ptua_exon_biomin <- ptua_exon_summary %>%
+  filter(group_id %in% biomin_groups_ptua) %>%
+  mutate(species = "Pocillopora")
+
+cat("Exons in calcification genes:\n")
+cat("  Acropora:", nrow(apul_exon_biomin), "\n")
+cat("  Porites:", nrow(peve_exon_biomin), "\n")
+cat("  Pocillopora:", nrow(ptua_exon_biomin), "\n")
+```
+
+## Compare Exon-Level CV Across Species
+
+```{r exon-cv-comparison, fig.height=8, fig.width=10}
+# Combine exon data
+all_exon_cv <- bind_rows(apul_exon_biomin, peve_exon_biomin, ptua_exon_biomin) %>%
+  filter(mean_expr > 0.5)  # Filter for expressed exons
+
+# Summary statistics by species
+exon_cv_summary <- all_exon_cv %>%
+  group_by(species) %>%
+  summarise(
+    n_exons = n(),
+    n_genes = n_distinct(group_id, na.rm = TRUE),
+    mean_cv = mean(cv_expr, na.rm = TRUE),
+    median_cv = median(cv_expr, na.rm = TRUE),
+    sd_cv = sd(cv_expr, na.rm = TRUE)
+  )
+
+kable(exon_cv_summary, digits = 3, 
+      caption = "Exon-Level Expression CV Summary by Species") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Violin plot of exon CV distribution
+p5 <- ggplot(all_exon_cv, aes(x = species, y = cv_expr, fill = species)) +
+  geom_violin(alpha = 0.7, trim = TRUE) +
+  geom_boxplot(width = 0.15, fill = "white", outlier.size = 0.5) +
+  scale_fill_manual(values = c("Acropora" = "#E64B35", 
+                                "Porites" = "#4DBBD5", 
+                                "Pocillopora" = "#00A087")) +
+  labs(
+    title = "Exon-Level Expression Variability (CV) in Calcification Genes",
+    subtitle = "Higher CV indicates more variable exon expression across samples",
+    x = "Species",
+    y = "Coefficient of Variation (CV)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+
+print(p5)
+```
+
+## Statistical Tests for Exon CV
+
+```{r exon-cv-stats}
+# Kruskal-Wallis test
+kw_exon <- kruskal.test(cv_expr ~ species, data = all_exon_cv)
+cat("Kruskal-Wallis test for Exon CV differences:\n")
+print(kw_exon)
+
+# Pairwise tests
+pairwise_exon <- pairwise.wilcox.test(
+  all_exon_cv$cv_expr, 
+  all_exon_cv$species, 
+  p.adjust.method = "bonferroni"
+)
+cat("\nPairwise Wilcoxon tests for Exon CV (Bonferroni adjusted):\n")
+print(pairwise_exon)
+```
+
+## Exon Variability Within Genes (Alternative Splicing Proxy)
+
+```{r exon-within-gene-variability}
+# Calculate within-gene exon variability (proxy for alternative splicing)
+exon_within_gene <- all_exon_cv %>%
+  group_by(species, group_id) %>%
+  summarise(
+    n_exons = n(),
+    exon_cv_mean = mean(cv_expr, na.rm = TRUE),
+    exon_cv_sd = sd(cv_expr, na.rm = TRUE),
+    exon_cv_range = max(cv_expr, na.rm = TRUE) - min(cv_expr, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  filter(n_exons >= 2)  # Need at least 2 exons
+
+# Summary by species
+within_gene_summary <- exon_within_gene %>%
+  group_by(species) %>%
+  summarise(
+    n_genes = n(),
+    mean_exon_cv_range = mean(exon_cv_range, na.rm = TRUE),
+    median_exon_cv_range = median(exon_cv_range, na.rm = TRUE),
+    mean_exon_cv_sd = mean(exon_cv_sd, na.rm = TRUE)
+  )
+
+kable(within_gene_summary, digits = 3, 
+      caption = "Within-Gene Exon CV Variability (Alternative Splicing Proxy)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Plot within-gene variability
+p6 <- ggplot(exon_within_gene, aes(x = species, y = exon_cv_range, fill = species)) +
+  geom_violin(alpha = 0.7, trim = TRUE) +
+  geom_boxplot(width = 0.15, fill = "white", outlier.size = 0.5) +
+  scale_fill_manual(values = c("Acropora" = "#E64B35", 
+                                "Porites" = "#4DBBD5", 
+                                "Pocillopora" = "#00A087")) +
+  labs(
+    title = "Within-Gene Exon CV Range (Alternative Splicing Indicator)",
+    subtitle = "Higher range indicates more variable exon usage patterns",
+    x = "Species",
+    y = "CV Range (Max - Min) Across Exons"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+
+print(p6)
+
+# Statistical test
+kw_within <- kruskal.test(exon_cv_range ~ species, data = exon_within_gene)
+cat("\nKruskal-Wallis test for within-gene exon variability:\n")
+print(kw_within)
+```
+
+# Highly Variable Genes Analysis
+
+## Identify Top Variable Genes Per Species
+
+```{r top-variable-genes}
+# Get top 20 most variable genes per species
+top_variable <- all_gene_cv %>%
+  group_by(species) %>%
+  slice_max(order_by = cv_expr, n = 20) %>%
+  left_join(ortho_annot %>% select(group_id, protein_name), by = "group_id") %>%
+  select(species, group_id, gene_id, mean_expr, cv_expr, protein_name)
+
+# Display top variable genes
+kable(top_variable %>% 
+        mutate(cv_expr = round(cv_expr, 3),
+               mean_expr = round(mean_expr, 1)) %>%
+        arrange(species, desc(cv_expr)), 
+      caption = "Top 20 Most Variable Calcification Genes by Species") %>%
+  kable_styling(bootstrap_options = c("striped", "hover")) %>%
+  scroll_box(height = "400px")
+```
+
+## Heatmap of CV for Common Orthologs
+
+```{r cv-heatmap, fig.height=12, fig.width=8}
+# Create CV matrix for common orthologs
+cv_matrix <- common_cv %>%
+  select(group_id, species, cv_expr) %>%
+  pivot_wider(names_from = species, values_from = cv_expr) %>%
+  column_to_rownames("group_id") %>%
+  drop_na()
+
+# Get annotations
+cv_annot <- ortho_annot %>%
+  filter(group_id %in% rownames(cv_matrix)) %>%
+  select(group_id, protein_name) %>%
+  distinct() %>%
+  mutate(protein_name = str_trunc(protein_name, 50))
+
+# Create heatmap
+if(nrow(cv_matrix) > 5) {
+  pheatmap(
+    as.matrix(cv_matrix),
+    scale = "none",
+    cluster_rows = TRUE,
+    cluster_cols = FALSE,
+    color = viridis(100),
+    main = "Expression CV for Common Calcification Orthologs",
+    fontsize_row = 6,
+    fontsize_col = 10,
+    show_rownames = nrow(cv_matrix) <= 50
+  )
+}
+```
+
+# Summary and Conclusions
+
+## Summary Statistics Table
+
+```{r final-summary}
+# Gene-level summary
+gene_summary_final <- all_gene_cv %>%
+  group_by(species) %>%
+  summarise(
+    `N Genes` = n(),
+    `Mean CV` = round(mean(cv_expr, na.rm = TRUE), 3),
+    `Median CV` = round(median(cv_expr, na.rm = TRUE), 3),
+    `SD CV` = round(sd(cv_expr, na.rm = TRUE), 3),
+    Level = "Gene"
+  )
+
+# Exon-level summary
+exon_summary_final <- all_exon_cv %>%
+  group_by(species) %>%
+  summarise(
+    `N Genes` = n_distinct(group_id, na.rm = TRUE),
+    `Mean CV` = round(mean(cv_expr, na.rm = TRUE), 3),
+    `Median CV` = round(median(cv_expr, na.rm = TRUE), 3),
+    `SD CV` = round(sd(cv_expr, na.rm = TRUE), 3),
+    Level = "Exon"
+  )
+
+final_summary <- bind_rows(gene_summary_final, exon_summary_final) %>%
+  arrange(Level, species)
+
+kable(final_summary, caption = "Summary of Expression Variability Analysis") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+## Hypothesis Evaluation
+
+```{r hypothesis-evaluation, results='asis'}
+# Calculate effect sizes (median CV ratios)
+acro_median <- median(all_gene_cv$cv_expr[all_gene_cv$species == "Acropora"], na.rm = TRUE)
+peve_median <- median(all_gene_cv$cv_expr[all_gene_cv$species == "Porites"], na.rm = TRUE)
+pocillo_median <- median(all_gene_cv$cv_expr[all_gene_cv$species == "Pocillopora"], na.rm = TRUE)
+
+cat("## Hypothesis Test Results\n\n")
+cat("**Hypothesis:** Gene expression of calcification genes is more variable in *Acropora* and *Pocillopora* than *Porites*\n\n")
+
+cat("### Gene-Level Results\n\n")
+cat("- Acropora median CV:", round(acro_median, 3), "\n")
+cat("- Porites median CV:", round(peve_median, 3), "\n")
+cat("- Pocillopora median CV:", round(pocillo_median, 3), "\n\n")
+
+cat("- Acropora/Porites CV ratio:", round(acro_median/peve_median, 2), "\n")
+cat("- Pocillopora/Porites CV ratio:", round(pocillo_median/peve_median, 2), "\n\n")
+
+# Interpretation
+cat("### Interpretation\n\n")
+if(acro_median > peve_median & pocillo_median > peve_median) {
+  cat("**Support for hypothesis:** Both *Acropora* and *Pocillopora* show higher expression variability than *Porites* in calcification genes.\n\n")
+} else if(acro_median > peve_median | pocillo_median > peve_median) {
+  cat("**Partial support for hypothesis:** Only one of *Acropora* or *Pocillopora* shows higher expression variability than *Porites*.\n\n")
+} else {
+  cat("**No support for hypothesis:** Neither *Acropora* nor *Pocillopora* shows higher expression variability than *Porites*.\n\n")
+}
+
+cat("### Exon-Level Results\n\n")
+acro_exon_median <- median(all_exon_cv$cv_expr[all_exon_cv$species == "Acropora"], na.rm = TRUE)
+peve_exon_median <- median(all_exon_cv$cv_expr[all_exon_cv$species == "Porites"], na.rm = TRUE)
+pocillo_exon_median <- median(all_exon_cv$cv_expr[all_exon_cv$species == "Pocillopora"], na.rm = TRUE)
+
+cat("- Acropora median exon CV:", round(acro_exon_median, 3), "\n")
+cat("- Porites median exon CV:", round(peve_exon_median, 3), "\n")
+cat("- Pocillopora median exon CV:", round(pocillo_exon_median, 3), "\n\n")
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```

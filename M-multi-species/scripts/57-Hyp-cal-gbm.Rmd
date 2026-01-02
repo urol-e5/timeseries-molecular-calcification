@@ -1,0 +1,534 @@
+---
+title: "57-Hyp-cal-gbm"
+subtitle: "Testing hypothesis: Porites exhibits constitutive higher GBM in calcification genes"
+author: "Steven Roberts"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document:
+    theme: readable
+    highlight: zenburn
+    toc: true
+    toc_float: true
+    number_sections: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  eval = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 8
+)
+```
+
+# Introduction
+
+## Hypothesis
+
+**Porites (peve) exhibits constitutive higher gene body methylation (GBM) in key calcification genes (e.g., Ca-ATPase, Carbonic Anhydrase) than Acropora (apul) and Pocillopora (ptua) compared to other genes.**
+
+This analysis will:
+
+1. Load gene body methylation (GBM) data for all three coral species
+2. Identify calcification-related genes from the biomineralization gene lists
+3. Compare GBM levels between calcification genes and all other genes across species
+4. Test whether Porites shows constitutively higher GBM in calcification genes relative to other species
+
+## Load Libraries
+
+```{r load-libraries}
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(viridis)
+library(knitr)
+library(kableExtra)
+library(scales)
+```
+
+# Data Loading
+
+## Load Biomineralization Gene Lists
+
+These contain the calcification-related genes for each species.
+
+```{r load-biomin}
+# Load biomineralization gene counts for each species
+apul_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/apul_biomin_counts.csv")
+peve_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/peve_biomin_counts.csv")
+ptua_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/ptua_biomin_counts.csv")
+
+# Display summary
+cat("Apul biomin genes:", nrow(apul_biomin), "\n")
+cat("Peve biomin genes:", nrow(peve_biomin), "\n")
+cat("Ptua biomin genes:", nrow(ptua_biomin), "\n")
+```
+
+## Load Gene Body Methylation Data
+
+```{r load-gbm}
+# Load GBM data for each species
+apul_gbm <- read_tsv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/D-Apul/output/40-Apul-Gene-Methylation/Apul-gene-methylation_75pct.tsv")
+peve_gbm <- read_tsv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/E-Peve/output/15-Peve-Gene-Methylation/Peve-gene-methylation_75pct.tsv")
+ptua_gbm <- read_tsv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/F-Ptua/output/09-Ptua-Gene-Methylation/Ptua-gene-methylation_75pct.tsv")
+
+# Display dimensions
+cat("Apul GBM genes:", nrow(apul_gbm), "samples:", ncol(apul_gbm) - 1, "\n")
+cat("Peve GBM genes:", nrow(peve_gbm), "samples:", ncol(peve_gbm) - 1, "\n")
+cat("Ptua GBM genes:", nrow(ptua_gbm), "samples:", ncol(ptua_gbm) - 1, "\n")
+```
+
+## Load Ortholog Annotation
+
+```{r load-annotation}
+# Load ortholog annotation for cross-species gene information
+ortho_annot <- read_csv("../output/12-ortho-annot/ortholog_groups_annotated.csv")
+
+# Preview annotation structure
+head(ortho_annot) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+# Data Processing
+
+## Calculate Mean GBM per Gene
+
+For each species, calculate the mean GBM across all samples for each gene.
+
+```{r calc-mean-gbm}
+# Function to calculate mean GBM per gene
+calc_mean_gbm <- function(gbm_df) {
+  gene_col <- names(gbm_df)[1]  # First column is gene ID
+  sample_cols <- names(gbm_df)[-1]  # Remaining columns are samples
+  
+  gbm_df %>%
+    rowwise() %>%
+    mutate(mean_gbm = mean(c_across(all_of(sample_cols)), na.rm = TRUE)) %>%
+    ungroup() %>%
+    select(gene_id = all_of(gene_col), mean_gbm)
+}
+
+# Calculate mean GBM for each species
+apul_mean_gbm <- calc_mean_gbm(apul_gbm)
+peve_mean_gbm <- calc_mean_gbm(peve_gbm)
+ptua_mean_gbm <- calc_mean_gbm(ptua_gbm)
+
+# Summary statistics
+cat("Apul mean GBM summary:\n")
+summary(apul_mean_gbm$mean_gbm)
+cat("\nPeve mean GBM summary:\n")
+summary(peve_mean_gbm$mean_gbm)
+cat("\nPtua mean GBM summary:\n")
+summary(ptua_mean_gbm$mean_gbm)
+```
+
+## Identify Calcification Genes
+
+Extract gene IDs from biomineralization lists and classify genes as calcification or non-calcification.
+
+```{r identify-calc-genes}
+# Extract biomin gene IDs for each species
+apul_biomin_genes <- apul_biomin[[1]]  # First column contains gene IDs
+peve_biomin_genes <- peve_biomin[[1]]
+ptua_biomin_genes <- ptua_biomin[[1]]
+
+# Add gene category to GBM data
+apul_mean_gbm <- apul_mean_gbm %>%
+  mutate(
+    gene_category = ifelse(gene_id %in% apul_biomin_genes, "Calcification", "Other"),
+    species = "Apul"
+  )
+
+peve_mean_gbm <- peve_mean_gbm %>%
+  mutate(
+    gene_category = ifelse(gene_id %in% peve_biomin_genes, "Calcification", "Other"),
+    species = "Peve"
+  )
+
+ptua_mean_gbm <- ptua_mean_gbm %>%
+  mutate(
+    gene_category = ifelse(gene_id %in% ptua_biomin_genes, "Calcification", "Other"),
+    species = "Ptua"
+  )
+
+# Count genes in each category
+cat("Gene counts by category:\n")
+cat("Apul - Calcification:", sum(apul_mean_gbm$gene_category == "Calcification"), 
+    "Other:", sum(apul_mean_gbm$gene_category == "Other"), "\n")
+cat("Peve - Calcification:", sum(peve_mean_gbm$gene_category == "Calcification"), 
+    "Other:", sum(peve_mean_gbm$gene_category == "Other"), "\n")
+cat("Ptua - Calcification:", sum(ptua_mean_gbm$gene_category == "Calcification"), 
+    "Other:", sum(ptua_mean_gbm$gene_category == "Other"), "\n")
+```
+
+## Combine Data
+
+```{r combine-data}
+# Combine all species data
+combined_gbm <- bind_rows(apul_mean_gbm, peve_mean_gbm, ptua_mean_gbm)
+
+# Set factor levels for consistent ordering
+combined_gbm$species <- factor(combined_gbm$species, levels = c("Apul", "Peve", "Ptua"))
+combined_gbm$gene_category <- factor(combined_gbm$gene_category, levels = c("Calcification", "Other"))
+
+# Remove NA values
+combined_gbm <- combined_gbm %>% filter(!is.na(mean_gbm))
+
+# Summary
+cat("Combined dataset dimensions:", nrow(combined_gbm), "genes\n")
+```
+
+# Summary Statistics
+
+## GBM Summary by Species and Gene Category
+
+```{r summary-stats}
+# Calculate summary statistics
+gbm_summary <- combined_gbm %>%
+  group_by(species, gene_category) %>%
+  summarise(
+    n = n(),
+    mean_gbm = mean(mean_gbm, na.rm = TRUE),
+    sd_gbm = sd(mean_gbm, na.rm = TRUE),
+    median_gbm = median(mean_gbm, na.rm = TRUE),
+    q25 = quantile(mean_gbm, 0.25, na.rm = TRUE),
+    q75 = quantile(mean_gbm, 0.75, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+gbm_summary %>%
+  kable(digits = 2, caption = "GBM Summary Statistics by Species and Gene Category") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+## GBM Ratio: Calcification vs Other Genes
+
+```{r gbm-ratio}
+# Calculate ratio of calcification GBM to other genes GBM for each species
+gbm_ratio <- gbm_summary %>%
+  select(species, gene_category, mean_gbm) %>%
+  pivot_wider(names_from = gene_category, values_from = mean_gbm)
+
+# Check column names and use backticks for column references
+gbm_ratio <- gbm_ratio %>%
+  mutate(
+    ratio_calc_to_other = `Calcification` / `Other`,
+    diff_calc_minus_other = `Calcification` - `Other`
+  )
+
+gbm_ratio %>%
+  kable(digits = 3, caption = "GBM Ratio: Calcification Genes vs Other Genes") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+# Visualizations
+
+## Distribution of GBM by Species and Gene Category
+
+```{r violin-plot, fig.width=12, fig.height=8}
+# Violin plot comparing GBM distributions
+ggplot(combined_gbm, aes(x = species, y = mean_gbm, fill = gene_category)) +
+  geom_violin(trim = FALSE, alpha = 0.7, position = position_dodge(width = 0.8)) +
+  geom_boxplot(width = 0.15, position = position_dodge(width = 0.8), 
+               outlier.shape = NA, alpha = 0.8) +
+  scale_fill_manual(values = c("Calcification" = "#E74C3C", "Other" = "#3498DB")) +
+  labs(
+    title = "Gene Body Methylation Distribution by Species and Gene Category",
+    subtitle = "Comparing calcification genes vs other genes across coral species",
+    x = "Species",
+    y = "Mean Gene Body Methylation (%)",
+    fill = "Gene Category"
+  ) +
+  theme_bw() +
+  theme(
+    text = element_text(size = 14),
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+```
+
+## Boxplot with Statistical Comparisons
+
+```{r boxplot-stats, fig.width=12, fig.height=8}
+# Boxplot with statistical comparisons
+ggplot(combined_gbm, aes(x = interaction(species, gene_category), y = mean_gbm, fill = gene_category)) +
+  geom_boxplot(alpha = 0.7, outlier.alpha = 0.3) +
+  scale_fill_manual(values = c("Calcification" = "#E74C3C", "Other" = "#3498DB")) +
+  scale_x_discrete(labels = c("Apul\nCalc", "Apul\nOther", "Peve\nCalc", "Peve\nOther", "Ptua\nCalc", "Ptua\nOther")) +
+  labs(
+    title = "Gene Body Methylation: Calcification vs Other Genes",
+    x = "Species and Gene Category",
+    y = "Mean Gene Body Methylation (%)",
+    fill = "Gene Category"
+  ) +
+  theme_bw() +
+  theme(
+    text = element_text(size = 14),
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5, face = "bold")
+  )
+```
+
+## Species Comparison - Calcification Genes Only
+
+```{r calc-genes-comparison, fig.width=10, fig.height=6}
+# Filter to calcification genes only
+calc_genes_only <- combined_gbm %>% filter(gene_category == "Calcification")
+
+# Violin plot for calcification genes across species
+ggplot(calc_genes_only, aes(x = species, y = mean_gbm, fill = species)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  geom_boxplot(width = 0.15, fill = "white", alpha = 0.8, outlier.shape = NA) +
+  geom_jitter(width = 0.1, alpha = 0.3, size = 1) +
+  scale_fill_viridis_d(option = "plasma") +
+  labs(
+    title = "Gene Body Methylation in Calcification Genes",
+    subtitle = "Comparing GBM levels across coral species",
+    x = "Species",
+    y = "Mean Gene Body Methylation (%)"
+  ) +
+  theme_bw() +
+  theme(
+    text = element_text(size = 14),
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+```
+
+## Density Plot Comparison
+
+```{r density-plot, fig.width=12, fig.height=8}
+# Density plot by species and category
+ggplot(combined_gbm, aes(x = mean_gbm, fill = gene_category)) +
+  geom_density(alpha = 0.5) +
+  facet_wrap(~species, ncol = 1, scales = "free_y") +
+  scale_fill_manual(values = c("Calcification" = "#E74C3C", "Other" = "#3498DB")) +
+  labs(
+    title = "Density Distribution of Gene Body Methylation",
+    x = "Mean Gene Body Methylation (%)",
+    y = "Density",
+    fill = "Gene Category"
+  ) +
+  theme_bw() +
+  theme(
+    text = element_text(size = 14),
+    legend.position = "bottom",
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    strip.text = element_text(face = "bold", size = 12)
+  )
+```
+
+# Statistical Analysis
+
+## Within-Species Comparison: Calcification vs Other Genes
+
+Test whether calcification genes have significantly different GBM than other genes within each species.
+
+```{r within-species-test}
+# Wilcoxon rank-sum test for each species
+within_species_tests <- combined_gbm %>%
+  group_by(species) %>%
+  summarise(
+    W_statistic = wilcox.test(mean_gbm[gene_category == "Calcification"], 
+                              mean_gbm[gene_category == "Other"])$statistic,
+    p_value = wilcox.test(mean_gbm[gene_category == "Calcification"], 
+                          mean_gbm[gene_category == "Other"])$p.value,
+    calc_median = median(mean_gbm[gene_category == "Calcification"], na.rm = TRUE),
+    other_median = median(mean_gbm[gene_category == "Other"], na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    p_adjusted = p.adjust(p_value, method = "BH"),
+    significance = case_when(
+      p_adjusted < 0.001 ~ "***",
+      p_adjusted < 0.01 ~ "**",
+      p_adjusted < 0.05 ~ "*",
+      TRUE ~ "ns"
+    )
+  )
+
+within_species_tests %>%
+  kable(digits = 4, caption = "Within-Species Comparison: Calcification vs Other Genes (Wilcoxon Test)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+## Between-Species Comparison: Calcification Genes
+
+Test whether GBM in calcification genes differs significantly between species.
+
+```{r between-species-calc}
+# Kruskal-Wallis test for calcification genes across species
+calc_kruskal <- kruskal.test(mean_gbm ~ species, data = calc_genes_only)
+
+cat("Kruskal-Wallis Test for Calcification Genes across Species:\n")
+cat("Chi-squared:", calc_kruskal$statistic, "\n")
+cat("df:", calc_kruskal$parameter, "\n")
+cat("p-value:", calc_kruskal$p.value, "\n")
+
+# Pairwise Wilcoxon tests for calcification genes
+calc_pairwise <- pairwise.wilcox.test(calc_genes_only$mean_gbm, calc_genes_only$species, 
+                                       p.adjust.method = "BH")
+
+cat("\nPairwise Wilcoxon Tests (BH-adjusted p-values):\n")
+print(calc_pairwise)
+```
+
+## Between-Species Comparison: All Genes
+
+```{r between-species-all}
+# Kruskal-Wallis test for all genes across species
+all_kruskal <- kruskal.test(mean_gbm ~ species, data = combined_gbm)
+
+cat("Kruskal-Wallis Test for All Genes across Species:\n")
+cat("Chi-squared:", all_kruskal$statistic, "\n")
+cat("df:", all_kruskal$parameter, "\n")
+cat("p-value:", all_kruskal$p.value, "\n")
+
+# Pairwise Wilcoxon tests for all genes
+all_pairwise <- pairwise.wilcox.test(combined_gbm$mean_gbm, combined_gbm$species, 
+                                      p.adjust.method = "BH")
+
+cat("\nPairwise Wilcoxon Tests (BH-adjusted p-values):\n")
+print(all_pairwise)
+```
+
+## Interaction Analysis: Species x Gene Category
+
+```{r interaction-analysis}
+# Test for interaction effect using aligned rank transform or similar
+# First, let's look at the effect sizes
+
+# Calculate difference in GBM (Calc - Other) for each species
+diff_by_species <- combined_gbm %>%
+  group_by(species, gene_category) %>%
+  summarise(mean_gbm = mean(mean_gbm, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = gene_category, values_from = mean_gbm) %>%
+  mutate(difference = `Calcification` - `Other`)
+
+cat("Difference in Mean GBM (Calcification - Other) by Species:\n")
+diff_by_species %>%
+  kable(digits = 3) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+# Hypothesis Evaluation
+
+## Summary Plot: GBM Enrichment in Calcification Genes
+
+```{r enrichment-plot, fig.width=10, fig.height=6}
+# Calculate fold enrichment
+enrichment_data <- gbm_summary %>%
+  select(species, gene_category, mean_gbm) %>%
+  pivot_wider(names_from = gene_category, values_from = mean_gbm) %>%
+  mutate(
+    fold_enrichment = `Calcification` / `Other`,
+    percent_increase = (`Calcification` - `Other`) / `Other` * 100
+  )
+
+# Plot fold enrichment
+ggplot(enrichment_data, aes(x = species, y = fold_enrichment, fill = species)) +
+  geom_bar(stat = "identity", alpha = 0.8) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "red", linewidth = 1) +
+  scale_fill_viridis_d(option = "plasma") +
+  labs(
+    title = "GBM Enrichment in Calcification Genes",
+    subtitle = "Ratio of mean GBM in calcification genes vs other genes",
+    x = "Species",
+    y = "Fold Enrichment (Calcification / Other)"
+  ) +
+  theme_bw() +
+  theme(
+    text = element_text(size = 14),
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+```
+
+## Comparison Summary
+
+```{r comparison-summary}
+# Create comprehensive comparison table
+comparison_summary <- gbm_summary %>%
+  select(species, gene_category, n, mean_gbm, median_gbm) %>%
+  arrange(species, gene_category)
+
+comparison_summary %>%
+  kable(digits = 2, caption = "Comprehensive GBM Comparison Summary",
+        col.names = c("Species", "Gene Category", "N Genes", "Mean GBM (%)", "Median GBM (%)")) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE) %>%
+  pack_rows("Acropora pulchra", 1, 2) %>%
+  pack_rows("Porites evermanni", 3, 4) %>%
+  pack_rows("Pocillopora tuahiniensis", 5, 6)
+```
+
+# Conclusions
+
+```{r conclusions}
+# Generate automated conclusions based on results
+cat("=" , rep("=", 70), "=\n", sep = "")
+cat("HYPOTHESIS EVALUATION\n")
+cat("=" , rep("=", 70), "=\n\n", sep = "")
+
+cat("Hypothesis: Porites (Peve) exhibits constitutive higher gene body methylation\n")
+cat("in key calcification genes than Acropora (Apul) and Pocillopora (Ptua)\n")
+cat("compared to other genes.\n\n")
+
+cat("-", rep("-", 70), "-\n", sep = "")
+cat("RESULTS SUMMARY\n")
+cat("-", rep("-", 70), "-\n\n", sep = "")
+
+# Get Peve calcification gene GBM
+peve_calc_gbm <- gbm_summary %>% 
+  filter(species == "Peve", gene_category == "Calcification") %>% 
+  pull(mean_gbm)
+peve_other_gbm <- gbm_summary %>% 
+  filter(species == "Peve", gene_category == "Other") %>% 
+  pull(mean_gbm)
+
+apul_calc_gbm <- gbm_summary %>% 
+  filter(species == "Apul", gene_category == "Calcification") %>% 
+  pull(mean_gbm)
+ptua_calc_gbm <- gbm_summary %>% 
+  filter(species == "Ptua", gene_category == "Calcification") %>% 
+  pull(mean_gbm)
+
+cat("1. Mean GBM in Calcification Genes:\n")
+cat("   - Apul:", round(apul_calc_gbm, 2), "%\n")
+cat("   - Peve:", round(peve_calc_gbm, 2), "%\n")
+cat("   - Ptua:", round(ptua_calc_gbm, 2), "%\n\n")
+
+cat("2. GBM Enrichment (Calcification/Other ratio):\n")
+for (i in 1:nrow(enrichment_data)) {
+  cat("   -", enrichment_data$species[i], ":", round(enrichment_data$fold_enrichment[i], 3), "\n")
+}
+
+cat("\n3. Statistical Significance:\n")
+cat("   - Kruskal-Wallis test (calcification genes across species): p =", 
+    format(calc_kruskal$p.value, scientific = TRUE), "\n")
+
+cat("\n", "-", rep("-", 70), "-\n", sep = "")
+cat("CONCLUSION\n")
+cat("-", rep("-", 70), "-\n", sep = "")
+
+# Determine if hypothesis is supported
+if (peve_calc_gbm > apul_calc_gbm && peve_calc_gbm > ptua_calc_gbm) {
+  cat("\nThe data SUPPORT the hypothesis that Porites (Peve) has higher GBM in\n")
+  cat("calcification genes compared to other species.\n")
+} else {
+  cat("\nThe data DO NOT SUPPORT the hypothesis that Porites (Peve) has higher GBM\n")
+  cat("in calcification genes compared to other species.\n")
+}
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```
