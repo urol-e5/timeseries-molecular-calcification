@@ -15,3 +15,435 @@ knitr::opts_chunk$set(
   fig.height = 8
 )
 ```
+
+# Introduction 
+
+This analysis will test the following hypothese: 
+
+1. Acropora will have higher miRNA expression relative to Porites and Pocillopora 
+2. Acropora will have more variable miRNA expression relative to Porites and Pocillopora
+
+# Load libraries 
+
+```{r load-libraries}
+library(tidyverse)
+library(stringr)
+library(DESeq2)
+library(kableExtra)
+```
+
+# Data preprocessing 
+
+Read in data and subset miRNAs 
+```{r load-miRNA-counts}
+# Read in raw counts
+apul_mirna_results <- read_delim("../../D-Apul/output/04-Apul-sRNA-discovery-ShortStack/ShortStack_out/Counts.txt", delim="\t") 
+peve_mirna_results <- read_delim("../../E-Peve/output/08-Peve-sRNA-discovery-ShortStack/ShortStack_out/Counts.txt", delim="\t") 
+ptua_mirna_results <- read_delim("../../F-Ptua/output/04-Ptua-sRNA-discovery-ShortStack/ShortStack_out/Counts.txt", delim="\t") 
+
+# Subset rows where MIRNA=Y and remove unneeded cols
+apul_mirna_results <- apul_mirna_results %>%
+  filter(MIRNA == "Y") %>%
+  select(-c(Coords, MIRNA))
+peve_mirna_results <- peve_mirna_results %>%
+  filter(MIRNA == "Y") %>%
+  select(-c(Coords, MIRNA))
+ptua_mirna_results <- ptua_mirna_results %>%
+  filter(MIRNA == "Y") %>%
+  select(-c(Coords, MIRNA))
+
+# Remove unneeded info from column name
+colnames(apul_mirna_results) <- sub("-fastp-adapters-polyG-31bp-merged_condensed", "", colnames(apul_mirna_results))
+colnames(peve_mirna_results) <- sub("-fastp-adapters-polyG-31bp-merged_condensed", "", colnames(peve_mirna_results))
+colnames(ptua_mirna_results) <- sub("-fastp-adapters-polyG-31bp-merged_condensed", "", colnames(ptua_mirna_results))
+
+# Check out data 
+head(apul_mirna_results)
+head(peve_mirna_results)
+head(ptua_mirna_results)
+```
+
+Use column names to rename columns based on RNA metadatta 
+```{r rename-columns}
+rna_meta <- read.csv("../data/rna_metadata.csv", header = T) %>%
+  mutate(Colony_TP = paste(ColonyID, Timepoint, sep = "_")) %>%
+  select(AzentaSampleName, Colony_TP)
+
+# Make vector of names 
+sample_lookup <- setNames(
+  rna_meta$Colony_TP,
+  rna_meta$AzentaSampleName)
+
+# Rename columns 
+apul_mirna_results_renamed <- apul_mirna_results %>%
+  rename_with(
+    ~ ifelse(.x %in% names(sample_lookup), sample_lookup[.x], .x), -Name)
+peve_mirna_results_renamed <- peve_mirna_results %>%
+  rename_with(
+    ~ ifelse(.x %in% names(sample_lookup), sample_lookup[.x], .x), -Name)
+ptua_mirna_results_renamed <- ptua_mirna_results %>%
+  rename_with(
+    ~ ifelse(.x %in% names(sample_lookup), sample_lookup[.x], .x), -Name)
+
+head(apul_mirna_results_renamed)
+head(peve_mirna_results_renamed)
+head(ptua_mirna_results_renamed)
+```
+
+# Calculate CV 
+
+Function to calculate CV
+```{r cv-function}
+cv <- function(x) {
+  x <- x[!is.na(x)]
+  if (mean(x) == 0) return(NA_real_)
+  sd(x) / mean(x)
+}
+```
+
+Pivot df to long format
+```{r pivot}
+apul_mirna_long <- apul_mirna_results_renamed %>%
+  pivot_longer(
+    -Name,
+    names_to = "Sample",
+    values_to = "count") %>%
+  mutate(TP = str_extract(Sample, "TP[1-4]"))
+
+peve_mirna_long <- peve_mirna_results_renamed %>%
+  pivot_longer(
+    -Name,
+    names_to = "Sample",
+    values_to = "count") %>%
+  mutate(TP = str_extract(Sample, "TP[1-4]"))
+
+ptua_mirna_long <- ptua_mirna_results_renamed %>%
+  pivot_longer(
+    -Name,
+    names_to = "Sample",
+    values_to = "count") %>%
+  mutate(TP = str_extract(Sample, "TP[1-4]"))
+```
+
+## Calculate mean, sd, and CV across all samples 
+
+```{r mean-sd-cv-summary}
+calc_cv_by_tp_normalized <- function(count_df, species_name,
+                                     min_mean = 5) {
+
+  ## ---------------------------
+  ## Prepare count matrix
+  ## ---------------------------
+  count_mat <- count_df %>%
+    column_to_rownames("Name") %>%
+    as.matrix()
+
+  ## Remove rows that are all zero
+  count_mat <- count_mat[rowSums(count_mat) > 0, , drop = FALSE]
+
+  ## Remove columns (samples) that are all zero
+  count_mat <- count_mat[, colSums(count_mat) > 0, drop = FALSE]
+
+  ## Safety check
+  if (ncol(count_mat) < 2) {
+    stop(paste("Not enough non-zero samples for", species_name))
+  }
+
+  coldata <- data.frame(
+    sample = colnames(count_mat),
+    row.names = colnames(count_mat)
+  )
+
+  ## ---------------------------
+  ## DESeq2 normalization
+  ## ---------------------------
+  dds <- DESeqDataSetFromMatrix(
+    countData = round(count_mat),
+    colData   = coldata,
+    design    = ~ 1
+  )
+
+  dds <- estimateSizeFactors(dds, type = "poscounts")
+
+  ## Check for NA size factors (should now be gone)
+  if (any(is.na(sizeFactors(dds)))) {
+    stop(paste("NA size factors remain for", species_name))
+  }
+
+  norm_counts <- counts(dds, normalized = TRUE)
+
+  ## ---------------------------
+  ## Filter low-expression clusters
+  ## ---------------------------
+  keep <- rowMeans(norm_counts) >= min_mean
+  norm_counts <- norm_counts[keep, , drop = FALSE]
+
+  ## ---------------------------
+  ## Long format + CV by TP
+  ## ---------------------------
+  norm_counts %>%
+    as.data.frame() %>%
+    rownames_to_column("Name") %>%
+    pivot_longer(
+      cols = -Name,
+      names_to = "Sample",
+      values_to = "norm_count"
+    ) %>%
+    mutate(
+      TP = str_extract(Sample, "TP[1-4]"),
+      Species = species_name
+    ) %>%
+    group_by(Name, TP, Species) %>%
+    summarise(
+      mean_expr = mean(norm_count, na.rm = TRUE),
+      sd_expr   = sd(norm_count, na.rm = TRUE),
+      cv_expr   = sd_expr / mean_expr,
+      n_samples = n(),
+      .groups = "drop"
+    )
+}
+
+
+# Run for all spp
+cv_all_species <- bind_rows(
+  calc_cv_by_tp_normalized(apul_mirna_results_renamed, "Acropora"),
+  calc_cv_by_tp_normalized(peve_mirna_results_renamed, "Porites"),
+  calc_cv_by_tp_normalized(ptua_mirna_results_renamed, "Pocillopora"))
+```
+
+Look at CV across all spp, regardless of timepoint 
+```{r cv-all-samples}
+cv_summary <- cv_all_species %>%
+  group_by(Species) %>%
+  summarise(
+    n_mirna = n_distinct(Name),  
+    mean_cv = mean(cv_expr, na.rm = TRUE),
+    median_cv = median(cv_expr, na.rm = TRUE),
+    sd_cv = sd(cv_expr, na.rm = TRUE),
+    iqr_cv = IQR(cv_expr, na.rm = TRUE),
+    q25 = quantile(cv_expr, 0.25, na.rm = TRUE),
+    q75 = quantile(cv_expr, 0.75, na.rm = TRUE))
+
+kable(cv_summary, digits = 3, caption = "miRNA Expression CV Summary by Species") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Violin plot of CV distribution
+p1 <- ggplot(cv_all_species, aes(x = Species, y = cv_expr, fill = Species)) +
+  geom_violin(alpha = 0.7, trim = TRUE) +
+  geom_boxplot(width = 0.15, fill = "white", outlier.size = 0.5) +
+  scale_fill_manual(values = c("Acropora" = "#E64B35", 
+                                "Porites" = "#4DBBD5", 
+                                "Pocillopora" = "#00A087")) +
+  labs(
+    title = "miRNA Expression Variability (CV)",
+    subtitle = "Higher CV indicates more variable expression across samples",
+    x = "Species",
+    y = "Coefficient of Variation (CV)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+
+print(p1)
+```
+
+Look at CV across all spp, including timepoint
+```{r cv-all-samples}
+cv_tp_summary <- cv_all_species %>%
+  group_by(Species, TP) %>%
+  summarise(
+    n_mirna = n_distinct(Name),  
+    mean_cv = mean(cv_expr, na.rm = TRUE),
+    median_cv = median(cv_expr, na.rm = TRUE),
+    sd_cv = sd(cv_expr, na.rm = TRUE),
+    iqr_cv = IQR(cv_expr, na.rm = TRUE),
+    q25 = quantile(cv_expr, 0.25, na.rm = TRUE),
+    q75 = quantile(cv_expr, 0.75, na.rm = TRUE))
+
+kable(cv_tp_summary, digits = 3, caption = "miRNA Expression CV Summary by Species and Timepoint") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+
+# Violin plot of CV distribution
+p2 <- ggplot(cv_all_species, aes(x = Species, y = cv_expr, fill = TP)) +
+  geom_violin(alpha = 0.7, trim = TRUE) +
+  geom_boxplot(width = 0.15, fill = "white", outlier.size = 0.5) +
+  #scale_fill_manual(values = c("Acropora" = "#E64B35", 
+  #                              "Porites" = "#4DBBD5", 
+  #                              "Pocillopora" = "#00A087")) +
+  labs(
+    title = "miRNA Expression Variability (CV)",
+    subtitle = "Higher CV indicates more variable expression across timepoints",
+    x = "Species",
+    y = "Coefficient of Variation (CV)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right",
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        plot.subtitle = element_text(hjust = 0.5))
+
+print(p2)
+```
+
+# Statistical tests for CV differences in miRNAs
+
+Kruskal-Wallis test, regardless of timepoint 
+```{r stats-all}
+# Kruskal-Wallis tests
+kw_test <- kruskal.test(cv_expr ~ Species, data = cv_all_species)
+cat("Kruskal-Wallis test for CV differences:\n")
+print(kw_test)
+
+# Compare specific pairs
+acro_vs_porites <- wilcox.test(
+  cv_all_species$cv_expr[cv_all_species$Species == "Acropora"],
+  cv_all_species$cv_expr[cv_all_species$Species == "Porites"]
+)
+
+acro_vs_poc <- wilcox.test(
+  cv_all_species$cv_expr[cv_all_species$Species == "Acropora"],
+  cv_all_species$cv_expr[cv_all_species$Species == "Pocillopora"]
+)
+
+pocillo_vs_porites <- wilcox.test(
+  cv_all_species$cv_expr[cv_all_species$Species == "Pocillopora"],
+  cv_all_species$cv_expr[cv_all_species$Species == "Porites"]
+)
+
+cat("\nAcropora vs Porites p-value:", acro_vs_porites$p.value, "\n")
+cat("\nAcropora vs Pocillopora p-value:", acro_vs_poc$p.value, "\n")
+cat("\nPocillopora vs Porites p-value:", pocillo_vs_porites$p.value, "\n")
+
+```
+
+Kruskal-Wallis test, including timepoint
+```{r stats-tp}
+# Get all unique timepoints and species
+timepoints <- sort(unique(cv_all_species$TP))
+species <- sort(unique(cv_all_species$Species))
+
+# Initialize empty list to store results
+kw_results <- list()
+pairwise_results <- list()
+
+# Loop through each timepoint
+for(tp in timepoints){
+  
+  df_tp <- cv_all_species %>% filter(TP == tp)
+  
+  cat("=== Timepoint:", tp, "===\n")
+  
+  # Kruskal-Wallis test
+  kw <- kruskal.test(cv_expr ~ Species, data = df_tp)
+  print(kw)
+  
+  kw_results[[tp]] <- data.frame(
+    TP = tp,
+    KW_statistic = kw$statistic,
+    KW_p = kw$p.value
+  )
+  
+  # Pairwise Wilcoxon tests for all species pairs
+  pairs <- combn(species, 2, simplify = FALSE)
+  
+  pairwise_tp <- data.frame(
+    TP = character(),
+    Species1 = character(),
+    Species2 = character(),
+    p_value = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  for(pair in pairs){
+    sp1 <- pair[1]
+    sp2 <- pair[2]
+    
+    w <- wilcox.test(
+      cv_expr ~ Species,
+      data = df_tp %>% filter(Species %in% c(sp1, sp2))
+    )
+    
+    pairwise_tp <- rbind(pairwise_tp,
+                         data.frame(
+                           TP = tp,
+                           Species1 = sp1,
+                           Species2 = sp2,
+                           p_value = w$p.value
+                         ))
+  }
+  
+  pairwise_results[[tp]] <- pairwise_tp
+  cat("\n")
+}
+
+# Combine results into tidy tables
+kw_results_df <- bind_rows(kw_results)
+pairwise_results_df <- bind_rows(pairwise_results)
+
+# Uses p < 0.05 threshold
+pairwise_results_df <- pairwise_results_df %>%
+  mutate(signif = ifelse(p_value < 0.05, "*", "ns"))
+
+# View summary tables
+kw_results_df
+pairwise_results_df
+
+```
+
+# Hypothesis interpretation 
+
+Summary, regardless of timepoint 
+```{r median-hypothesis}
+cv_medians <- cv_all_species %>%
+  group_by(Species) %>%
+  summarise(median_cv = median(cv_expr, na.rm = TRUE)) %>%
+  pivot_wider(names_from = Species, values_from = median_cv)
+
+# Extract median values
+acro_median   <- cv_medians$Acropora
+peve_median   <- cv_medians$Porites
+pocillo_median <- cv_medians$Pocillopora
+
+# Test hypothesis
+if(acro_median > peve_median & pocillo_median > peve_median) {
+  cat("**Support for hypothesis:** Both *Acropora* and *Pocillopora* show higher miRNA expression variability than *Porites*.\n")
+} else if(acro_median > peve_median | pocillo_median > peve_median) {
+  cat("**Partial support for hypothesis:** Only one of *Acropora* or *Pocillopora* shows higher miRNA expression variability than *Porites*.\n")
+} else {
+  cat("**No support for hypothesis:** Neither *Acropora* nor *Pocillopora* shows higher miRNA expression variability than *Porites*.\n")
+}
+```
+
+Summary including timepoint 
+```{r}
+for(tp in unique(cv_all_species$TP)) {
+  
+  cv_tp <- cv_all_species %>% filter(TP == tp)
+  
+  cv_medians <- cv_tp %>%
+    group_by(Species) %>%
+    summarise(median_cv = median(cv_expr, na.rm = TRUE)) %>%
+    pivot_wider(names_from = Species, values_from = median_cv)
+  
+  acro_median   <- cv_medians$Acropora
+  peve_median   <- cv_medians$Porites
+  pocillo_median <- cv_medians$Pocillopora
+  
+  cat("\nTimepoint:", tp, "\n")
+  
+  if(acro_median > peve_median & pocillo_median > peve_median) {
+    cat("**Support for hypothesis:** Both *Acropora* and *Pocillopora* show higher miRNA expression variability than *Porites*.\n")
+  } else if(acro_median > peve_median | pocillo_median > peve_median) {
+    cat("**Partial support for hypothesis:** Only one of *Acropora* or *Pocillopora* shows higher miRNA expression variability than *Porites*.\n")
+  } else {
+    cat("**No support for hypothesis:** Neither *Acropora* nor *Pocillopora* shows higher miRNA expression variability than *Porites*.\n")
+  }
+}
+```
+
+# Session info 
+
+```{r session}
+sessionInfo()
+```
+
