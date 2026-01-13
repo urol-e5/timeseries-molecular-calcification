@@ -249,7 +249,7 @@ print(p1)
 ```
 
 Look at CV across all spp, including timepoint
-```{r cv-all-samples}
+```{r cv-timepoints}
 cv_tp_summary <- cv_all_species %>%
   group_by(Species, TP) %>%
   summarise(
@@ -393,7 +393,7 @@ pairwise_results_df
 # Hypothesis interpretation 
 
 Summary, regardless of timepoint 
-```{r median-hypothesis}
+```{r hypothesis-testing}
 cv_medians <- cv_all_species %>%
   group_by(Species) %>%
   summarise(median_cv = median(cv_expr, na.rm = TRUE)) %>%
@@ -415,7 +415,7 @@ if(acro_median > peve_median & pocillo_median > peve_median) {
 ```
 
 Summary including timepoint 
-```{r}
+```{r hypothesis-testing-again}
 for(tp in unique(cv_all_species$TP)) {
   
   cv_tp <- cv_all_species %>% filter(TP == tp)
