@@ -18,7 +18,7 @@ knitr::opts_chunk$set(
 
 # Introduction 
 
-This analysis will test the following hypothese: 
+This analysis will test the following hypotheses: 
 
 1. Acropora will have higher miRNA expression relative to Porites and Pocillopora 
 2. Acropora will have more variable miRNA expression relative to Porites and Pocillopora

@@ -1,0 +1,153 @@
+---
+title: "58.1-expression of miRNAs interacting with biomin genes"
+author: "Jill Ashey"
+date: "2026-01-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  eval = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 8
+)
+```
+
+# Introduction 
+
+This analysis will test the following hypothesis: 
+
+- Expression of miRNAs that putatively interact with biomineralization genes will be more variable in Acropora than in Porites or Pocillopora
+
+# Load libraries 
+
+```{r load-libraries}
+library(tidyverse)
+library(stringr)
+library(DESeq2)
+library(kableExtra)
+library(purrr)
+library(readr)
+```
+
+# Data preprocessing - miRNA counts data 
+
+Read in data and subset miRNAs 
+```{r load-miRNA-counts}
+# Read in raw counts
+apul_mirna_results <- read_delim("../../D-Apul/output/04-Apul-sRNA-discovery-ShortStack/ShortStack_out/Counts.txt", delim="\t") 
+peve_mirna_results <- read_delim("../../E-Peve/output/08-Peve-sRNA-discovery-ShortStack/ShortStack_out/Counts.txt", delim="\t") 
+ptua_mirna_results <- read_delim("../../F-Ptua/output/04-Ptua-sRNA-discovery-ShortStack/ShortStack_out/Counts.txt", delim="\t") 
+
+# Subset rows where MIRNA=Y and remove unneeded cols
+apul_mirna_results <- apul_mirna_results %>%
+  filter(MIRNA == "Y") %>%
+  select(-c(Coords, MIRNA))
+peve_mirna_results <- peve_mirna_results %>%
+  filter(MIRNA == "Y") %>%
+  select(-c(Coords, MIRNA))
+ptua_mirna_results <- ptua_mirna_results %>%
+  filter(MIRNA == "Y") %>%
+  select(-c(Coords, MIRNA))
+
+# Remove unneeded info from column name
+colnames(apul_mirna_results) <- sub("-fastp-adapters-polyG-31bp-merged_condensed", "", colnames(apul_mirna_results))
+colnames(peve_mirna_results) <- sub("-fastp-adapters-polyG-31bp-merged_condensed", "", colnames(peve_mirna_results))
+colnames(ptua_mirna_results) <- sub("-fastp-adapters-polyG-31bp-merged_condensed", "", colnames(ptua_mirna_results))
+
+# Check out data 
+head(apul_mirna_results)
+head(peve_mirna_results)
+head(ptua_mirna_results)
+```
+
+Use column names to rename columns based on RNA metadatta 
+```{r rename-columns}
+rna_meta <- read.csv("../data/rna_metadata.csv", header = T) %>%
+  mutate(Colony_TP = paste(ColonyID, Timepoint, sep = "_")) %>%
+  select(AzentaSampleName, Colony_TP)
+
+# Make vector of names 
+sample_lookup <- setNames(
+  rna_meta$Colony_TP,
+  rna_meta$AzentaSampleName)
+
+# Rename columns 
+apul_mirna_results_renamed <- apul_mirna_results %>%
+  rename_with(
+    ~ ifelse(.x %in% names(sample_lookup), sample_lookup[.x], .x), -Name)
+peve_mirna_results_renamed <- peve_mirna_results %>%
+  rename_with(
+    ~ ifelse(.x %in% names(sample_lookup), sample_lookup[.x], .x), -Name)
+ptua_mirna_results_renamed <- ptua_mirna_results %>%
+  rename_with(
+    ~ ifelse(.x %in% names(sample_lookup), sample_lookup[.x], .x), -Name)
+
+head(apul_mirna_results_renamed)
+head(peve_mirna_results_renamed)
+head(ptua_mirna_results_renamed)
+```
+
+# miRNAs interacting with biomineralization genes 
+
+Read in miranda data for all spp
+```{r}
+# Column names for miranda data files 
+cols <- c(
+  "miRNA", "mRNA", "score", "energy",
+  "query_start_end", "subject_start_end",
+  "total_bp_shared", "query_similar", "subject_similar")
+
+# Apul miranda data 
+apul_files <- tibble(
+  path = c(
+    "../../D-Apul/output/07-Apul-miRNA-mRNA-miRanda/Apul-miRanda-3UTR-strict-parsed-geneIDs.txt",
+    "../../D-Apul/output/07.1-Apul-miRNA-mRNA-miRanda-additional_inputs/Apul-miRanda-mRNA_full-strict-parsed.txt",
+    "../../D-Apul/output/07.1-Apul-miRNA-mRNA-miRanda-additional_inputs/Apul-miRanda-5UTR_1kb-strict-parsed.txt"),
+  Type = c("3UTR", "CDS", "5UTR"))
+
+# Format Apul mRNA and miRNA names  
+apul_mir_interact <- apul_files %>%
+  mutate(data = map(path, ~ read_tsv(.x, col_names = cols))) %>%
+  unnest(data) %>%
+  mutate(miRNA = gsub("^>|\\..*$", "", miRNA),
+         mRNA  = gsub("::.*$", "", mRNA))
+```
+
+NEED TO ID THE GENES ASSOCIATED WITH THE 5UTR AND CDS MIRANDA FILES using the GFFs.
+
+# Intersect interaction data with biomineralization gene lists 
+
+Read in biomin genes
+```{r}
+# Load biomin count data from GitHub
+apul_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/apul_biomin_counts.csv")
+apul_biomin_genes <- apul_biomin$gene_id
+peve_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/peve_biomin_counts.csv")
+ptua_biomin <- read_csv("https://raw.githubusercontent.com/urol-e5/timeseries-molecular-calcification/refs/heads/main/M-multi-species/output/33-biomin-pathway-counts/ptua_biomin_counts.csv")
+```
+
+Filter miranda data based on biomin genes 
+```{r}
+apul_mir_interact_biomin <- apul_mir_interact %>%
+  filter(mRNA %in% apul_biomin_genes)
+length(unique(apul_mir_interact_biomin$miRNA))
+length(unique(apul_mir_interact_biomin$mRNA))
+```
+
+# Filter miRNA counts based on miRNAs interacting with biomin genes
+
+```{r}
+apul_mir_interact_biomin_list <- apul_mir_interact_biomin$miRNA
+
+apul_mirna_results_biomin <- apul_mirna_results_renamed %>%
+  filter(Name %in% apul_mir_interact_biomin_list)
+```
+
+
+
+
+
